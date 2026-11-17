@@ -51,6 +51,21 @@ public class DiskSpoolTest {
     }
 
     @Test
+    public void appendBatch_interleavesWithAppendInOrder() throws Exception {
+        DiskSpool spool = new DiskSpool(tempDir);
+
+        spool.append("a".getBytes());
+        spool.appendBatch(List.of("bb".getBytes(), "ccc".getBytes()));
+        spool.appendBatch(List.of());
+
+        DiskSpool.ReadBatch b = spool.readBatch(10, 1024);
+        assertEquals(3, b.records().size());
+        assertArrayEquals("a".getBytes(), b.records().get(0));
+        assertArrayEquals("bb".getBytes(), b.records().get(1));
+        assertArrayEquals("ccc".getBytes(), b.records().get(2));
+    }
+
+    @Test
     public void loadMeta_persistsReadOffsetAcrossInstances() throws Exception {
         DiskSpool spool1 = new DiskSpool(tempDir);
         spool1.append("one".getBytes());

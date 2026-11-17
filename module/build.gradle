@@ -6,7 +6,7 @@ plugins {
 }
 
 group = 'com.example.ignition'
-version = '1.0.10'
+version = '1.2.0'
 
 // Module ID:
 // - Default is the current internal/dev module id.
@@ -188,6 +188,7 @@ sourceSets {
                 // 8.3-only hook + record
                 exclude '**/ZerobusGatewayHook83.java'
                 exclude '**/ZerobusSettings83.java'
+                exclude '**/historian/HistorianCollector.java'
             }
         }
         proto {
@@ -263,6 +264,7 @@ jar {
         rename { 'module.xml' }
         filter { line ->
             line.replace('<id>com.example.ignition.zerobus</id>', "<id>${moduleId}</id>")
+                .replaceAll('<version>[^<]*</version>', "<version>${version}</version>")
         }
     }
     from('src/main/resources/simplemodule.properties')
@@ -303,6 +305,7 @@ task buildModule(type: Zip, dependsOn: [jar, verifyIgnitionSdkJars]) {
         // Allow override of the module ID at build time (e.g., Module Showcase publishing).
         filter { line ->
             line.replace('<id>com.example.ignition.zerobus</id>', "<id>${moduleId}</id>")
+                .replaceAll('<version>[^<]*</version>', "<version>${version}</version>")
         }
     }
     

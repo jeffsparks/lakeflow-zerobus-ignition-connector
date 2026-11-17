@@ -1,0 +1,71 @@
+syntax = "proto3";
+
+package com.example.ignition.zerobus.proto;
+
+option java_package = "com.example.ignition.zerobus.proto";
+option java_outer_classname = "HistorianProto";
+option java_multiple_files = true;
+
+// Historian records sent through Zerobus. Each message matches one landing table
+// (databricks/historian/tables.sql) field-for-field. Every field is `optional` so an
+// unset field lands as NULL rather than as a proto3 default (0, false, "").
+// TIMESTAMP fields are microseconds since the Unix epoch.
+
+// Row of metrics_ingest. Exactly one value_* field is set, or none for a value-less reading.
+message MetricReading {
+  optional string metric_id = 1;
+  optional int64 time = 2;
+  // Source quality code; Ignition QualityCode as an unsigned 32-bit value.
+  optional int64 quality = 3;
+  optional int64 value_int = 4;
+  optional double value_double = 5;
+  optional bool value_bool = 6;
+  optional string value_text = 7;
+  optional int64 value_ts = 8;
+  optional bytes value_bytes = 9;
+  optional string value_json = 10;
+}
+
+// Row of metric_metadata_events: a complete snapshot of one producer/provider/path binding.
+message MetricMetadataEvent {
+  message HierarchyLevel {
+    optional string level_name = 1;
+    optional string level_value = 2;
+  }
+
+  optional string metric_id = 1;
+  optional string producer_id = 2;
+  optional string tag_provider = 3;
+  optional string tag_path = 4;
+  optional bool is_active = 5;
+  repeated HierarchyLevel hierarchy = 6;
+  optional string device_tag_name = 7;
+  optional string source_ref = 8;
+  optional string data_type = 9;
+  optional bool history_enabled = 10;
+  optional int64 history_max_age_ms = 11;
+  optional string quality_system = 12;
+  optional string engineering_units = 13;
+  optional string description = 14;
+  optional int64 metadata_observed_at = 15;
+  optional string identity_mode = 16;
+  optional string identity_key = 17;
+  optional int64 metadata_revision = 18;
+}
+
+// Row of collector_events.
+message CollectorEvent {
+  optional string producer_id = 1;
+  optional string session_id = 2;
+  optional int64 time = 3;
+  optional string event_type = 4;
+}
+
+// Local store-and-forward envelope; never sent to Databricks.
+message SpoolRecord {
+  oneof record {
+    MetricReading reading = 1;
+    MetricMetadataEvent metadata = 2;
+    CollectorEvent collector = 3;
+  }
+}

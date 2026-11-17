@@ -44,7 +44,18 @@ Follow this order before sending production data:
 
 Before enabling ingest, create the table that matches your sink mode.
 
-#### Zerobus mode (`sinkMode=zerobus`) - Delta table
+#### Zerobus mode (`sinkMode=zerobus`) - Ignition 8.3 historian tables
+
+The 8.3 module writes historian readings, metadata snapshots, and collector events to three landing tables in
+the configured **Target Schema** (`catalog.schema`), and a Lakeflow pipeline maintains the processed tables.
+Create the tables, grants, and pipeline as described in `databricks/historian/README.md`.
+
+Collection follows each tag's Ignition history settings: tags in the tag selection with **History Enabled** produce
+readings on every value or quality change, plus a reading of the current value whenever **Max Time Between Samples**
+elapses without one. For high tag rates, enable store-and-forward and raise **Batch Size** so each acknowledged batch
+carries more readings.
+
+#### Zerobus mode (`sinkMode=zerobus`) - Ignition 8.1 single Delta table
 
 Use the ready-to-run example:
 

@@ -743,16 +743,65 @@
                     </div>
                     <div class="form-grid">
                         <div class="form-group">
-                            <label for="targetTable" class="required">Target Table</label>
-                            <input type="text" class="form-control" id="targetTable" name="targetTable"
-                                   placeholder="catalog.schema.table_name" required>
-                            <small class="form-help">Unity Catalog table in format: catalog.schema.table</small>
+                            <label for="targetSchema" class="required">Target Schema</label>
+                            <input type="text" class="form-control" id="targetSchema" name="targetSchema"
+                                   placeholder="catalog.schema">
+                            <small class="form-help">Schema holding the historian tables (metrics_ingest, metric_metadata_events, collector_events)</small>
                         </div>
                         <div class="form-group">
-                            <label for="sourceSystemId">Source System ID</label>
+                            <label for="sourceSystemId">Producer ID</label>
                             <input type="text" class="form-control" id="sourceSystemId" name="sourceSystemId"
-                                   value="ignition-gateway">
-                            <small class="form-help">Identifier for this Ignition gateway</small>
+                                   placeholder="gateway name">
+                            <small class="form-help">Stable identifier for this gateway. Leave blank to use the gateway name.</small>
+                        </div>
+                        <div class="form-group">
+                            <label for="targetTable">Target Table (Ignition 8.1 only)</label>
+                            <input type="text" class="form-control" id="targetTable" name="targetTable"
+                                   placeholder="catalog.schema.table_name">
+                            <small class="form-help">Single-table output used by the Ignition 8.1 build</small>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Historian -->
+                <div class="section">
+                    <div class="section-header">
+                        <h2>Historian</h2>
+                    </div>
+                    <div class="form-grid">
+                        <div class="form-group full-width">
+                            <label for="hierarchyLevels">Hierarchy Levels</label>
+                            <input type="text" class="form-control" id="hierarchyLevels" name="hierarchyLevels"
+                                   placeholder="site, area, work_center, work_unit, device">
+                            <small class="form-help">
+                                Ordered, comma-separated labels for the leading tag path segments. The last segment is always part of
+                                the tag name; remaining segments form device_tag_name.
+                            </small>
+                        </div>
+                        <div class="form-group">
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="sourceKeyedEnabled" name="sourceKeyedEnabled">
+                                <label for="sourceKeyedEnabled">Enable Source-Keyed Tag Regex</label>
+                            </div>
+                            <small class="form-help">
+                                Matching tags with an OPC item path use their first four path segments plus the source as identity,
+                                so renaming deeper folders or the tag keeps its history.
+                            </small>
+                        </div>
+                        <div class="form-group">
+                            <label for="sourceKeyedTagRegex">Source-Keyed Tag Regex</label>
+                            <input type="text" class="form-control" id="sourceKeyedTagRegex" name="sourceKeyedTagRegex"
+                                   placeholder="/raw/">
+                            <small class="form-help">
+                                Java regex found anywhere in the full tag path, including the <code>[provider]</code> prefix.
+                                Anchor with <code>^</code> and <code>$</code> to match the whole path.
+                            </small>
+                        </div>
+                        <div class="form-group">
+                            <label for="metadataCheckIntervalMs">Metadata Check Interval (ms)</label>
+                            <input type="number" class="form-control" id="metadataCheckIntervalMs" name="metadataCheckIntervalMs"
+                                   value="300000" min="10000" max="86400000">
+                            <small class="form-help">How often tag configuration is re-read to detect new, changed, and removed tags</small>
                         </div>
                     </div>
                 </div>
@@ -1647,7 +1696,7 @@
                 const cfg = cfgResp.ok ? await cfgResp.json() : null;
                 safeText('cfgWorkspaceUrl', cfg ? cfg.workspaceUrl : '—');
                 safeText('cfgZerobusEndpoint', cfg ? cfg.zerobusEndpoint : '—');
-                safeText('cfgTargetTable', cfg ? cfg.targetTable : '—');
+                safeText('cfgTargetTable', cfg ? (cfg.targetSchema || cfg.targetTable) : '—');
                 safeText('cfgTagMode', cfg ? cfg.tagSelectionMode : '—');
                 const tagCount = cfg && Array.isArray(cfg.explicitTagPaths) ? cfg.explicitTagPaths.length : 0;
                 safeText('cfgExplicitCount', cfg ? `${tagCount} tag(s)` : '—');
@@ -1701,8 +1750,15 @@
             document.getElementById('oauthClientSecret').value = config.oauthClientSecret || '';
 
             // Unity Catalog
+            document.getElementById('targetSchema').value = config.targetSchema || '';
             document.getElementById('targetTable').value = config.targetTable || '';
-            document.getElementById('sourceSystemId').value = config.sourceSystemId || 'ignition-gateway';
+            document.getElementById('sourceSystemId').value = config.sourceSystemId || '';
+
+            // Historian
+            document.getElementById('hierarchyLevels').value = (config.hierarchyLevels || []).join(', ');
+            document.getElementById('sourceKeyedEnabled').checked = config.sourceKeyedEnabled || false;
+            document.getElementById('sourceKeyedTagRegex').value = config.sourceKeyedTagRegex || '';
+            document.getElementById('metadataCheckIntervalMs').value = config.metadataCheckIntervalMs || 300000;
 
             // Tag selection
             document.getElementById('enableDirectSubscriptions').checked = config.enableDirectSubscriptions !== false;
@@ -1767,8 +1823,13 @@
                 zerobusEndpoint: document.getElementById('zerobusEndpoint').value,
                 oauthClientId: document.getElementById('oauthClientId').value,
                 oauthClientSecret: document.getElementById('oauthClientSecret').value,
+                targetSchema: document.getElementById('targetSchema').value.trim(),
                 targetTable: document.getElementById('targetTable').value,
-                sourceSystemId: document.getElementById('sourceSystemId').value,
+                sourceSystemId: document.getElementById('sourceSystemId').value.trim(),
+                hierarchyLevels: document.getElementById('hierarchyLevels').value.split(',').map(s => s.trim()).filter(s => s.length > 0),
+                sourceKeyedEnabled: document.getElementById('sourceKeyedEnabled').checked,
+                sourceKeyedTagRegex: document.getElementById('sourceKeyedTagRegex').value,
+                metadataCheckIntervalMs: parseInt(document.getElementById('metadataCheckIntervalMs').value),
                 enableDirectSubscriptions: document.getElementById('enableDirectSubscriptions') ? document.getElementById('enableDirectSubscriptions').checked : true,
                 tagSelectionMode: document.getElementById('tagSelectionMode').value,
                 tagFolderPath: document.getElementById('tagFolderPath').value,

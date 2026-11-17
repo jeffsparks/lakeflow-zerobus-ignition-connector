@@ -56,6 +56,31 @@ public final class DiskSpool {
         }
     }
 
+    /**
+     * Append several records with a single write and a single force to disk.
+     */
+    public synchronized void appendBatch(List<byte[]> payloads) throws IOException {
+        if (payloads == null || payloads.isEmpty()) {
+            return;
+        }
+        int total = 0;
+        for (byte[] p : payloads) {
+            total += 4 + p.length;
+        }
+        ByteBuffer buf = ByteBuffer.allocate(total);
+        for (byte[] p : payloads) {
+            buf.putInt(p.length);
+            buf.put(p);
+        }
+        buf.flip();
+        try (FileChannel ch = FileChannel.open(dataFile, StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.APPEND)) {
+            while (buf.hasRemaining()) {
+                ch.write(buf);
+            }
+            ch.force(false);
+        }
+    }
+
     public synchronized long backlogBytes() throws IOException {
         long size = Files.exists(dataFile) ? Files.size(dataFile) : 0L;
         return Math.max(0L, size - readOffset);

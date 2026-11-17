@@ -1,5 +1,7 @@
 package com.example.ignition.zerobus;
 
+import com.example.ignition.zerobus.historian.MetricIdentity;
+
 import java.io.Serializable;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -91,7 +93,24 @@ public class ConfigModel implements Serializable {
     
     /** Table name */
     private String tableName = "";
-    
+
+    // === Historian Settings ===
+
+    /** Unity Catalog schema holding the historian landing tables (format: catalog.schema) */
+    private String targetSchema = "";
+
+    /** Ordered labels applied to the leading tag path segments (e.g. site, area, work_center) */
+    private List<String> hierarchyLevels = new ArrayList<>();
+
+    /** Enables source-keyed metric identity for tags matching sourceKeyedTagRegex */
+    private boolean sourceKeyedEnabled = false;
+
+    /** Java regex found anywhere in the full tag path (including the [provider] prefix) */
+    private String sourceKeyedTagRegex = "";
+
+    /** Interval between tag metadata checks (milliseconds) */
+    private long metadataCheckIntervalMs = 300_000L;
+
     // === Tag Selection Settings ===
     
     /**
@@ -169,8 +188,11 @@ public class ConfigModel implements Serializable {
     
     // === Data Mapping Settings ===
     
-    /** Source system identifier (for source_system field) */
-    private String sourceSystemId = "ignition-gateway";
+    /**
+     * Source system identifier (source_system field; historian producer_id).
+     * Blank means the gateway system name is used as the historian producer_id.
+     */
+    private String sourceSystemId = "";
     
     /** Include tag quality in events */
     private boolean includeQuality = true;
@@ -385,7 +407,47 @@ public class ConfigModel implements Serializable {
     public String getTableName() {
         return tableName;
     }
-    
+
+    public String getTargetSchema() {
+        return targetSchema;
+    }
+
+    public void setTargetSchema(String targetSchema) {
+        this.targetSchema = targetSchema;
+    }
+
+    public List<String> getHierarchyLevels() {
+        return hierarchyLevels;
+    }
+
+    public void setHierarchyLevels(List<String> hierarchyLevels) {
+        this.hierarchyLevels = hierarchyLevels == null ? new ArrayList<>() : new ArrayList<>(hierarchyLevels);
+    }
+
+    public boolean isSourceKeyedEnabled() {
+        return sourceKeyedEnabled;
+    }
+
+    public void setSourceKeyedEnabled(boolean sourceKeyedEnabled) {
+        this.sourceKeyedEnabled = sourceKeyedEnabled;
+    }
+
+    public String getSourceKeyedTagRegex() {
+        return sourceKeyedTagRegex;
+    }
+
+    public void setSourceKeyedTagRegex(String sourceKeyedTagRegex) {
+        this.sourceKeyedTagRegex = sourceKeyedTagRegex;
+    }
+
+    public long getMetadataCheckIntervalMs() {
+        return metadataCheckIntervalMs;
+    }
+
+    public void setMetadataCheckIntervalMs(long metadataCheckIntervalMs) {
+        this.metadataCheckIntervalMs = metadataCheckIntervalMs;
+    }
+
     public String getTagSelectionMode() {
         return tagSelectionMode;
     }
@@ -791,8 +853,13 @@ public class ConfigModel implements Serializable {
                     errors.add("OAuth client secret is required");
                 }
 
-                if (targetTable == null || targetTable.isEmpty()) {
-                    errors.add("Target table is required");
+                // Ignition 8.3 writes the historian tables in targetSchema; the 8.1 build still uses targetTable.
+                if (targetSchema != null && !targetSchema.isBlank()) {
+                    if (!targetSchema.trim().matches("[^.\\s]+\\.[^.\\s]+")) {
+                        errors.add("Target schema must be in format: catalog.schema");
+                    }
+                } else if (targetTable == null || targetTable.isEmpty()) {
+                    errors.add("Target schema is required");
                 } else if (catalogName.isEmpty() || schemaName.isEmpty() || tableName.isEmpty()) {
                     errors.add("Target table must be in format: catalog.schema.table");
                 }
@@ -814,6 +881,26 @@ public class ConfigModel implements Serializable {
             }
         }
         
+        if (sourceKeyedEnabled) {
+            String regexError = MetricIdentity.SourceKeyedRule.compile(true, sourceKeyedTagRegex).getError();
+            if (regexError != null) {
+                errors.add(regexError);
+            }
+        }
+
+        if (hierarchyLevels != null) {
+            for (String level : hierarchyLevels) {
+                if (level == null || level.isBlank()) {
+                    errors.add("Hierarchy level labels must not be blank");
+                    break;
+                }
+            }
+        }
+
+        if (metadataCheckIntervalMs < 10_000L || metadataCheckIntervalMs > 86_400_000L) {
+            errors.add("Metadata check interval must be between 10000ms and 86400000ms");
+        }
+
         if (batchSize <= 0 || batchSize > 10000) {
             errors.add("Batch size must be between 1 and 10000");
         }
@@ -1007,6 +1094,11 @@ public class ConfigModel implements Serializable {
             || !Objects.equals(this.postgresTable, newConfig.postgresTable)
             || this.postgresPoolSize != newConfig.postgresPoolSize
             || !Objects.equals(this.targetTable, newConfig.targetTable)
+            || !Objects.equals(this.targetSchema, newConfig.targetSchema)
+            || !Objects.equals(this.hierarchyLevels, newConfig.hierarchyLevels)
+            || this.sourceKeyedEnabled != newConfig.sourceKeyedEnabled
+            || !Objects.equals(this.sourceKeyedTagRegex, newConfig.sourceKeyedTagRegex)
+            || this.metadataCheckIntervalMs != newConfig.metadataCheckIntervalMs
             || this.enableDirectSubscriptions != newConfig.enableDirectSubscriptions
             || !Objects.equals(this.tagSelectionMode, newConfig.tagSelectionMode)
             || !Objects.equals(this.tagFolderPath, newConfig.tagFolderPath)
@@ -1061,6 +1153,11 @@ public class ConfigModel implements Serializable {
         this.postgresPoolSize = other.postgresPoolSize;
         this.targetTable = other.targetTable;
         this.parseTableName();
+        this.targetSchema = other.targetSchema;
+        this.hierarchyLevels = (other.hierarchyLevels == null) ? new ArrayList<>() : new ArrayList<>(other.hierarchyLevels);
+        this.sourceKeyedEnabled = other.sourceKeyedEnabled;
+        this.sourceKeyedTagRegex = other.sourceKeyedTagRegex;
+        this.metadataCheckIntervalMs = other.metadataCheckIntervalMs;
         this.enableDirectSubscriptions = other.enableDirectSubscriptions;
         this.tagSelectionMode = other.tagSelectionMode;
         this.tagFolderPath = other.tagFolderPath;
@@ -1101,6 +1198,7 @@ public class ConfigModel implements Serializable {
                 "workspaceUrl='" + workspaceUrl + '\'' +
                 ", sinkMode=" + sinkMode +
                 ", targetTable='" + targetTable + '\'' +
+                ", targetSchema='" + targetSchema + '\'' +
                 ", tagSelectionMode='" + tagSelectionMode + '\'' +
                 ", batchSize=" + batchSize +
                 ", enabled=" + enabled +

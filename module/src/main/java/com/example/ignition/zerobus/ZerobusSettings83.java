@@ -50,6 +50,13 @@ public class ZerobusSettings83 extends PersistentRecord {
     public static final StringField TargetTable = new StringField(META, "TargetTable", SFieldFlags.SMANDATORY);
     public static final StringField SourceSystemId = new StringField(META, "SourceSystemId");
 
+    // Historian
+    public static final StringField TargetSchema = new StringField(META, "TargetSchema");
+    public static final StringField HierarchyLevels = new StringField(META, "HierarchyLevels"); // comma-separated, ordered
+    public static final BooleanField SourceKeyedEnabled = new BooleanField(META, "SourceKeyedEnabled");
+    public static final StringField SourceKeyedTagRegex = new StringField(META, "SourceKeyedTagRegex");
+    public static final LongField MetadataCheckIntervalMs = new LongField(META, "MetadataCheckIntervalMs");
+
     // Tag Selection
     public static final BooleanField EnableDirectSubscriptions = new BooleanField(META, "EnableDirectSubscriptions");
     public static final StringField TagSelectionMode = new StringField(META, "TagSelectionMode");
@@ -106,7 +113,12 @@ public class ZerobusSettings83 extends PersistentRecord {
         PostgresTable.setDefault("raw_tags");
         PostgresPoolSize.setDefault(5);
         TargetTable.setDefault("");
-        SourceSystemId.setDefault("ignition-gateway");
+        SourceSystemId.setDefault("");
+        TargetSchema.setDefault("");
+        HierarchyLevels.setDefault("");
+        SourceKeyedEnabled.setDefault(false);
+        SourceKeyedTagRegex.setDefault("");
+        MetadataCheckIntervalMs.setDefault(300_000L);
         EnableDirectSubscriptions.setDefault(true);
         TagSelectionMode.setDefault("explicit");
         TagFolderPath.setDefault("");
@@ -165,6 +177,11 @@ public class ZerobusSettings83 extends PersistentRecord {
         config.setPostgresPoolSize(getInt(PostgresPoolSize));
         config.setTargetTable(getString(TargetTable));
         config.setSourceSystemId(getString(SourceSystemId));
+        config.setTargetSchema(getString(TargetSchema));
+        config.setHierarchyLevels(splitList(getString(HierarchyLevels)));
+        config.setSourceKeyedEnabled(getBoolean(SourceKeyedEnabled));
+        config.setSourceKeyedTagRegex(getString(SourceKeyedTagRegex));
+        config.setMetadataCheckIntervalMs(getLong(MetadataCheckIntervalMs));
         config.setEnableDirectSubscriptions(getBoolean(EnableDirectSubscriptions));
         config.setTagSelectionMode(getString(TagSelectionMode));
         config.setTagFolderPath(getString(TagFolderPath));
@@ -230,6 +247,11 @@ public class ZerobusSettings83 extends PersistentRecord {
         setInt(PostgresPoolSize, config.getPostgresPoolSize());
         setString(TargetTable, config.getTargetTable());
         setString(SourceSystemId, config.getSourceSystemId());
+        setString(TargetSchema, config.getTargetSchema());
+        setString(HierarchyLevels, String.join(",", config.getHierarchyLevels()));
+        setBoolean(SourceKeyedEnabled, config.isSourceKeyedEnabled());
+        setString(SourceKeyedTagRegex, config.getSourceKeyedTagRegex());
+        setLong(MetadataCheckIntervalMs, config.getMetadataCheckIntervalMs());
         setBoolean(EnableDirectSubscriptions, config.isEnableDirectSubscriptions());
         setString(TagSelectionMode, config.getTagSelectionMode());
         setString(TagFolderPath, config.getTagFolderPath());
@@ -258,6 +280,19 @@ public class ZerobusSettings83 extends PersistentRecord {
         setDouble(NumericSdtDeviation, config.getNumericSdtDeviation());
         setLong(NumericSdtMaxIntervalMs, config.getNumericSdtMaxIntervalMs());
         setLong(NumericSdtMinIntervalMs, config.getNumericSdtMinIntervalMs());
+    }
+
+    private static List<String> splitList(String csv) {
+        List<String> out = new ArrayList<>();
+        if (csv == null || csv.isBlank()) {
+            return out;
+        }
+        for (String s : csv.split(",")) {
+            if (!s.trim().isEmpty()) {
+                out.add(s.trim());
+            }
+        }
+        return out;
     }
 }
 
