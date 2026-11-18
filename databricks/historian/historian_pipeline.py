@@ -2,7 +2,7 @@
 
 Flows:
   metrics_ingest (change data feed) -> metrics
-  metric_metadata_events            -> metric_registry, metric_catalog
+  metric_metadata_events            -> metric_registry, metric_names, metric_metadata
 
 The targets are ordinary managed tables written through ForEachBatch sinks, so a pipeline full refresh
 resets only the checkpoints; replayed rows are absorbed by the same deduplicating writes.
@@ -37,10 +37,13 @@ VALUE_COLS = ["value_int", "value_double", "value_bool", "value_text", "value_ts
 READING_KEY = ["metric_id", "time", "quality"] + VALUE_COLS
 METRICS_COLS = ["metric_id", "time", "ingest_time", "quality"] + VALUE_COLS
 
-BINDING_KEY = ["producer_id", "tag_provider", "tag_path"]
-CATALOG_COLS = [
+NAME_KEY = ["producer_id", "tag_provider", "tag_path"]
+NAME_COLS = [
     "metric_id", "producer_id", "tag_provider", "tag_path", "is_active", "hierarchy", "device_tag_name",
-    "source_ref", "data_type", "history_enabled", "history_max_age_ms", "quality_system",
+    "source_ref", "metadata_observed_at",
+]
+METADATA_COLS = [
+    "metric_id", "is_active", "history_enabled", "history_max_age_ms", "data_type", "quality_system",
     "engineering_units", "description", "metadata_observed_at",
 ]
 
@@ -103,7 +106,7 @@ def metrics_ingest_readings():
 
 
 # ---------------------------------------------------------------------------
-# Metadata: identity registration and current catalog
+# Metadata: identity registration, current names, resolved metric metadata
 # ---------------------------------------------------------------------------
 
 def _register_identities(events):
@@ -136,13 +139,13 @@ def _register_identities(events):
     )
 
 
-def _update_catalog(events):
+def _update_names(events):
     session = events.sparkSession
     newest_in_batch = (
         events.withColumn(
             "rn",
             F.row_number().over(
-                Window.partitionBy(*BINDING_KEY).orderBy(
+                Window.partitionBy(*NAME_KEY).orderBy(
                     F.desc("metadata_revision"), F.desc("metadata_observed_at")
                 )
             ),
@@ -150,19 +153,19 @@ def _update_catalog(events):
         .where("rn = 1")
         .drop("rn")
     )
-    # Apply a snapshot only if it is the highest revision ever recorded for its binding, so late or
+    # Apply a snapshot only if it is the highest revision ever recorded for its name, so late or
     # replayed older snapshots never overwrite newer state.
     history = session.table(table("metric_metadata_events")).where("metadata_revision IS NOT NULL")
     max_revision = (
         history.alias("h")
         .join(
-            newest_in_batch.select(*BINDING_KEY).alias("b"),
+            newest_in_batch.select(*NAME_KEY).alias("b"),
             (F.col("h.producer_id") == F.col("b.producer_id"))
             & F.col("h.tag_provider").eqNullSafe(F.col("b.tag_provider"))
             & (F.col("h.tag_path") == F.col("b.tag_path")),
             "left_semi",
         )
-        .groupBy(*BINDING_KEY)
+        .groupBy(*NAME_KEY)
         .agg(F.max("metadata_revision").alias("max_revision"))
     )
     current = (
@@ -175,17 +178,107 @@ def _update_catalog(events):
             "left",
         )
         .where("m.max_revision IS NULL OR n.metadata_revision >= m.max_revision")
-        .select(*[F.col(f"n.{c}") for c in CATALOG_COLS])
+        .select(*[F.col(f"n.{c}") for c in NAME_COLS])
     )
-    current.createOrReplaceTempView("historian_catalog_batch")
-    assignments = ", ".join(f"t.{c} = s.{c}" for c in CATALOG_COLS)
+    current.createOrReplaceTempView("historian_names_batch")
+    assignments = ", ".join(f"t.{c} = s.{c}" for c in NAME_COLS)
     session.sql(
         f"""
-        MERGE INTO {table('metric_catalog')} t
-        USING historian_catalog_batch s
+        MERGE INTO {table('metric_names')} t
+        USING historian_names_batch s
         ON t.producer_id = s.producer_id AND t.tag_provider <=> s.tag_provider AND t.tag_path = s.tag_path
         WHEN MATCHED THEN UPDATE SET {assignments}
-        WHEN NOT MATCHED THEN INSERT ({", ".join(CATALOG_COLS)}) VALUES ({", ".join("s." + c for c in CATALOG_COLS)})
+        WHEN NOT MATCHED THEN INSERT ({", ".join(NAME_COLS)}) VALUES ({", ".join("s." + c for c in NAME_COLS)})
+        """
+    )
+
+
+def _resolve_metadata(events):
+    """Re-resolves metric_metadata for every metric that a name in this batch points at now or pointed at before.
+
+    A name's current state is its highest-revision snapshot in metric_metadata_events (the rule metric_names
+    applies), so the result does not depend on batch order and a replay reproduces it.
+    """
+    session = events.sparkSession
+    events.select(*NAME_KEY).distinct().createOrReplaceTempView("historian_changed_names")
+    resolved = session.sql(
+        f"""
+        WITH snapshots AS (
+          SELECT * FROM {table('metric_metadata_events')}
+          WHERE metric_id IS NOT NULL AND producer_id IS NOT NULL AND tag_path IS NOT NULL
+            AND metadata_revision IS NOT NULL
+        ),
+        affected AS (
+          SELECT DISTINCT e.metric_id FROM snapshots e
+          LEFT SEMI JOIN historian_changed_names c
+            ON e.producer_id = c.producer_id AND e.tag_provider <=> c.tag_provider AND e.tag_path = c.tag_path
+        ),
+        names AS (
+          SELECT DISTINCT e.producer_id, e.tag_provider, e.tag_path FROM snapshots e
+          LEFT SEMI JOIN affected a ON e.metric_id = a.metric_id
+        ),
+        latest AS (
+          SELECT * FROM (
+            SELECT e.*, row_number() OVER (
+              PARTITION BY e.producer_id, e.tag_provider, e.tag_path
+              ORDER BY e.metadata_revision DESC, e.metadata_observed_at DESC) AS rn
+            FROM snapshots e
+            LEFT SEMI JOIN names n
+              ON e.producer_id = n.producer_id AND e.tag_provider <=> n.tag_provider AND e.tag_path = n.tag_path
+          ) WHERE rn = 1
+        ),
+        current AS (
+          SELECT l.*,
+            bool_or(l.is_active) OVER (PARTITION BY l.metric_id) AS any_active,
+            struct(l.metadata_observed_at, l.metadata_revision, l.producer_id, coalesce(l.tag_provider, ''),
+                   l.tag_path) AS recency
+          FROM latest l
+          LEFT SEMI JOIN affected a ON l.metric_id = a.metric_id
+        ),
+        -- Active names decide; a metric without any falls back to its inactive names.
+        resolved AS (
+          SELECT
+            metric_id,
+            coalesce(bool_or(history_enabled), false) AS history_enabled,
+            coalesce(
+              min(CASE WHEN history_enabled AND history_max_age_ms > 0 THEN history_max_age_ms END),
+              max_by(history_max_age_ms, recency)) AS history_max_age_ms,
+            max_by(data_type, recency) AS data_type,
+            max_by(quality_system, recency) AS quality_system,
+            max_by(engineering_units, recency) AS engineering_units,
+            max_by(description, recency) AS description,
+            max(metadata_observed_at) AS metadata_observed_at
+          FROM current
+          WHERE is_active OR NOT any_active
+          GROUP BY metric_id
+        ),
+        activity AS (
+          SELECT metric_id, bool_or(is_active) AS is_active FROM current GROUP BY metric_id
+        )
+        SELECT
+          a.metric_id,
+          coalesce(x.is_active, false) AS is_active,
+          r.history_enabled, r.history_max_age_ms, r.data_type, r.quality_system, r.engineering_units,
+          r.description, r.metadata_observed_at,
+          r.metric_id IS NOT NULL AS has_names
+        FROM affected a
+        LEFT JOIN resolved r ON r.metric_id = a.metric_id
+        LEFT JOIN activity x ON x.metric_id = a.metric_id
+        """
+    )
+    resolved.createOrReplaceTempView("historian_metadata_batch")
+    assignments = ", ".join(f"t.{c} = s.{c}" for c in METADATA_COLS)
+    # A metric with no active name keeps its last resolved settings; one seen for the first time is
+    # inserted from its inactive names.
+    session.sql(
+        f"""
+        MERGE INTO {table('metric_metadata')} t
+        USING historian_metadata_batch s
+        ON t.metric_id = s.metric_id
+        WHEN MATCHED AND s.is_active THEN UPDATE SET {assignments}
+        WHEN MATCHED AND t.is_active THEN UPDATE SET t.is_active = false
+        WHEN NOT MATCHED AND s.has_names
+          THEN INSERT ({", ".join(METADATA_COLS)}) VALUES ({", ".join("s." + c for c in METADATA_COLS)})
         """
     )
 
@@ -201,7 +294,8 @@ def write_metadata(df, batch_id):
     events = events.cache()
     try:
         _register_identities(events)
-        _update_catalog(events)
+        _update_names(events)
+        _resolve_metadata(events)
     finally:
         events.unpersist()
 

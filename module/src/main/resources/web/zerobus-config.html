@@ -819,7 +819,16 @@
                             <label for="metadataCheckIntervalMs">Metadata Check Interval (ms)</label>
                             <input type="number" class="form-control" id="metadataCheckIntervalMs" name="metadataCheckIntervalMs"
                                    value="300000" min="10000" max="86400000">
-                            <small class="form-help">How often tag configuration is re-read to detect new, changed, and removed tags</small>
+                            <small class="form-help">
+                                How often tag configuration is re-read to detect new, changed, and removed tags.
+                                A tag is marked as no longer existing after it is missing from two complete checks in a row.
+                            </small>
+                        </div>
+                        <div class="form-group">
+                            <label for="startupDelayMs">Startup Delay (ms)</label>
+                            <input type="number" class="form-control" id="startupDelayMs" name="startupDelayMs"
+                                   value="0" min="0" max="3600000">
+                            <small class="form-help">Delay tag reads to allow other Ignition modules time to fully load before attempting to read tags</small>
                         </div>
                     </div>
                 </div>
@@ -962,6 +971,16 @@
                                 <br> - Company operations context: <code>[ops]Company/Site01</code>
                                 <br> - Company maintenance: <code>[cmms]Company/Site01</code>
                                 <br> - Company forecast: <code>[forecast]Company/Site01</code>
+                            </small>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="includeRootFolderInNames" name="includeRootFolderInNames">
+                                <label for="includeRootFolderInNames">Include Root Folder in Metric Names</label>
+                            </div>
+                            <small class="form-help">
+                                When unchecked, historian metric names start below the Tag Folder Path: with root
+                                <code>[MQTT Engine]spb_telemetry</code>, the tag <code>spb_telemetry/site/area/Tag</code> is named
+                                <code>site/area/Tag</code>. The name determines each metric's identity and hierarchy, so changing
+                                this setting starts new metrics.
                             </small>
                         </div>
 
@@ -1380,7 +1399,8 @@
         // field blocks HTML5 form submission but can't be focused to show an
         // error, so Save silently does nothing. Only enforce `required` on the
         // fields belonging to the ACTIVE sink mode.
-        const ZEROBUS_REQUIRED_FIELDS = ['workspaceUrl', 'zerobusEndpoint', 'oauthClientId', 'oauthClientSecret', 'targetTable'];
+        // Target schema (8.3) or target table (8.1) is checked by the server, which knows the build.
+        const ZEROBUS_REQUIRED_FIELDS = ['workspaceUrl', 'zerobusEndpoint', 'oauthClientId', 'oauthClientSecret'];
         const LAKEBASE_REQUIRED_FIELDS = ['postgresHost', 'postgresUser', 'postgresPassword'];
 
         function setFieldsRequired(ids, isRequired) {
@@ -1920,6 +1940,7 @@
             document.getElementById('sourceKeyedEnabled').checked = config.sourceKeyedEnabled || false;
             document.getElementById('sourceKeyedTagRegex').value = config.sourceKeyedTagRegex || '';
             document.getElementById('metadataCheckIntervalMs').value = config.metadataCheckIntervalMs || 300000;
+            document.getElementById('startupDelayMs').value = config.startupDelayMs || 0;
 
             // PostgreSQL / Lakebase
             document.getElementById('postgresHost').value = config.postgresHost || '';
@@ -1939,6 +1960,7 @@
             document.getElementById('tagFolderPath').value = config.tagFolderPath || '';
             document.getElementById('tagPathPattern').value = config.tagPathPattern || '';
             document.getElementById('includeSubfolders').checked = config.includeSubfolders !== false;
+            document.getElementById('includeRootFolderInNames').checked = config.includeRootFolderInNames !== false;
 
             explicitTags = config.explicitTagPaths || [];
             renderTags();
@@ -2011,6 +2033,7 @@
                 sourceKeyedEnabled: document.getElementById('sourceKeyedEnabled').checked,
                 sourceKeyedTagRegex: document.getElementById('sourceKeyedTagRegex').value,
                 metadataCheckIntervalMs: parseInt(document.getElementById('metadataCheckIntervalMs').value),
+                startupDelayMs: parseInt(document.getElementById('startupDelayMs').value) || 0,
                 postgresHost: document.getElementById('postgresHost').value,
                 postgresPort: parseInt(document.getElementById('postgresPort').value),
                 postgresDatabase: document.getElementById('postgresDatabase').value,
@@ -2027,6 +2050,7 @@
                 tagPathPattern: document.getElementById('tagPathPattern').value,
                 explicitTagPaths: explicitTags,
                 includeSubfolders: document.getElementById('includeSubfolders').checked,
+                includeRootFolderInNames: document.getElementById('includeRootFolderInNames').checked,
                 batchSize: parseInt(document.getElementById('batchSize').value),
                 batchFlushIntervalMs: parseInt(document.getElementById('batchFlushIntervalMs').value),
                 maxQueueSize: parseInt(document.getElementById('maxQueueSize').value),
@@ -2086,13 +2110,18 @@
                     method: 'POST'
                 });
 
-                if (!response.ok) throw new Error('Connection test failed');
-
-                const result = await response.json();
-                showAlert('Connection test successful', 'success');
+                const result = await response.json().catch(() => ({}));
+                if (!response.ok || result.success !== true) {
+                    throw new Error(result.message || `HTTP ${response.status}`);
+                }
+                showAlert(result.message || 'Connection test successful', 'success');
             } catch (error) {
                 console.error('Test error:', error);
-                showAlert('Connection test failed: ' + error.message, 'error');
+                const text = error.message.startsWith('Connection test failed') ? error.message
+                    : 'Connection test failed: ' + error.message;
+                const escaped = document.createElement('div');
+                escaped.textContent = text;
+                showAlert(escaped.innerHTML, 'error');
             } finally {
                 setButtonLoading('testBtn', 'testBtnSpinner', false);
             }

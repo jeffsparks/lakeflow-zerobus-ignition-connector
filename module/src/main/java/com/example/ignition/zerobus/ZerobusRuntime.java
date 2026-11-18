@@ -32,6 +32,11 @@ public interface ZerobusRuntime {
 
     boolean testConnection();
 
+    /** Reason the last {@link #testConnection()} failed, or null when unknown. */
+    default String getLastConnectionTestError() {
+        return null;
+    }
+
     /**
      * Force the runtime services (buffer/flusher + Zerobus client) to restart.
      *

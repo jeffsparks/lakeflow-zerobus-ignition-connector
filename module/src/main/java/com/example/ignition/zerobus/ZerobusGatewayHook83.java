@@ -41,6 +41,7 @@ public class ZerobusGatewayHook83 extends AbstractGatewayModuleHook implements Z
     private ConfigModel configModel;
     private ZerobusConfigResource restResource;
     private final AtomicBoolean restartInProgress = new AtomicBoolean(false);
+    private volatile String lastConnectionTestError;
 
     // 8.3 web-ui module registration
     private static final String MOUNT_ALIAS = "zerobus";
@@ -347,18 +348,29 @@ public class ZerobusGatewayHook83 extends AbstractGatewayModuleHook implements Z
 
     @Override
     public boolean testConnection() {
+        lastConnectionTestError = null;
         try {
             if (!isLakebaseMode()) {
-                return new HistorianZerobusClient(configModel).testConnection();
+                HistorianZerobusClient testClient = new HistorianZerobusClient(configModel);
+                boolean success = testClient.testConnection();
+                lastConnectionTestError = success ? null : testClient.getLastError();
+                return success;
             }
             PostgresClientManager testClient = new PostgresClientManager(configModel);
-            boolean success = testClient.testConnection().isEmpty();
+            Optional<String> error = testClient.testConnection();
             testClient.shutdown();
-            return success;
+            lastConnectionTestError = error.orElse(null);
+            return error.isEmpty();
         } catch (Exception e) {
             logger.error("Connection test failed (8.3)", e);
+            lastConnectionTestError = e.getMessage();
             return false;
         }
+    }
+
+    @Override
+    public String getLastConnectionTestError() {
+        return lastConnectionTestError;
     }
 
     @Override

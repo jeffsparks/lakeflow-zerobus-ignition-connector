@@ -31,7 +31,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -46,14 +45,15 @@ import java.util.concurrent.atomic.AtomicLong;
  * Collects historian readings, metadata snapshots, and collector events for the Zerobus sink.
  *
  * Collection is driven by each tag's Ignition history configuration: tags with history enabled produce a reading
- * on every value or quality change, and an unchanged tag produces a reading of its current value once its
- * maximum time between samples elapses.
+ * on every value or quality change, and an unchanged tag whose last value was Good produces a max-age reading of
+ * that value (quality Good_Backfill) once its maximum time between samples elapses.
  */
 public final class HistorianCollector {
     private static final Logger logger = LoggerFactory.getLogger(HistorianCollector.class);
 
     static final long HEARTBEAT_INTERVAL_MS = 60_000L;
     static final long MIN_MAX_AGE_MS = 1_000L;
+    static final int MAX_AGE_QUALITY = 203; // Good_Backfill
     private static final long MAX_AGE_SCAN_MS = 250L;
     private static final long PERSIST_INTERVAL_MS = 200L;
     private static final long FLUSH_TIME_BUDGET_MS = 5_000L;
@@ -111,7 +111,7 @@ public final class HistorianCollector {
                 ? HistorianBuffer.onDisk(dir, config.getSpoolMaxBytes(), Math.max(config.getMaxQueueSize(), config.getBatchSize() * 4), config.getSpoolReadMaxBytes())
                 : HistorianBuffer.inMemory(config.getMaxQueueSize());
         this.tracker = new MetadataTracker(producerId, new HierarchyParser(config.getHierarchyLevels()), sourceKeyedRule,
-                dir.resolve("metadata.state"), System::currentTimeMillis);
+                nameRoot(config), dir.resolve("metadata.state"), System::currentTimeMillis);
         this.client = new HistorianZerobusClient(config);
         this.resolver = new TagSelectionResolver(config, MAX_BROWSE_NODES, MAX_PATTERN_MATCHES);
     }
@@ -120,8 +120,8 @@ public final class HistorianCollector {
         if (!running.compareAndSet(false, true)) {
             return;
         }
-        logger.info("Starting historian collector (producer_id={}, session_id={}, buffer={})",
-                producerId, sessionId, buffer.isDiskBacked() ? "disk" : "memory");
+        logger.info("Starting historian collector (producer_id={}, session_id={}, buffer={}, startup delay={} ms)",
+                producerId, sessionId, buffer.isDiskBacked() ? "disk" : "memory", config.getStartupDelayMs());
         timers = Executors.newScheduledThreadPool(2, daemon("Zerobus-Historian-Timer"));
         scanner = Executors.newSingleThreadScheduledExecutor(daemon("Zerobus-Historian-Metadata"));
         flusher = Executors.newSingleThreadScheduledExecutor(daemon("Zerobus-Historian-Flush"));
@@ -134,7 +134,8 @@ public final class HistorianCollector {
         if (!config.isEnableDirectSubscriptions()) {
             logger.info("Direct subscriptions disabled; readings come only from HTTP ingest for scanned bindings");
         }
-        scanner.scheduleWithFixedDelay(this::scanMetadata, 0L, config.getMetadataCheckIntervalMs(), TimeUnit.MILLISECONDS);
+        scanner.scheduleWithFixedDelay(this::scanMetadata, Math.max(0L, config.getStartupDelayMs()),
+                config.getMetadataCheckIntervalMs(), TimeUnit.MILLISECONDS);
         flusher.scheduleWithFixedDelay(this::flush, config.getBatchFlushIntervalMs(), config.getBatchFlushIntervalMs(), TimeUnit.MILLISECONDS);
     }
 
@@ -194,7 +195,7 @@ public final class HistorianCollector {
                 try {
                     values = tm.readAsync(propertyPaths).get(Math.max(1_000L, config.getRequestTimeoutMs()), TimeUnit.MILLISECONDS);
                 } catch (Exception e) {
-                    logger.warn("Metadata read failed for {} tag(s); this scan will not retire bindings: {}", chunk.size(), e.toString());
+                    logger.warn("Metadata read failed for {} tag(s); missing tags are not counted for this scan: {}", chunk.size(), e.toString());
                     complete = false;
                     continue;
                 }
@@ -213,7 +214,7 @@ public final class HistorianCollector {
                 enqueue(SpoolRecord.newBuilder().setMetadata(e).build());
             }
             metadataEmitted.addAndGet(events.size());
-            applyCollection(pathsByKey, complete);
+            applyCollection(pathsByKey);
             lastScanMs = System.currentTimeMillis();
             lastScanSummary = String.format("%d tag(s) observed, %d snapshot(s) emitted, inventory %s",
                     observed.size(), events.size(), complete ? "complete" : "incomplete");
@@ -268,7 +269,7 @@ public final class HistorianCollector {
         return TimeUnits.toMillis(magnitude, unit);
     }
 
-    private void applyCollection(Map<String, TagPath> observedPaths, boolean inventoryComplete) {
+    private void applyCollection(Map<String, TagPath> observedPaths) {
         List<TagState> toSubscribe = new ArrayList<>();
         List<TagState> toUnsubscribe = new ArrayList<>();
         for (Map.Entry<String, TagPath> e : observedPaths.entrySet()) {
@@ -288,14 +289,13 @@ public final class HistorianCollector {
             }
             state.enabled = enabled;
         }
-        if (inventoryComplete) {
-            Set<String> current = observedPaths.keySet();
-            for (TagState s : new ArrayList<>(tags.values())) {
-                if (!current.contains(s.path.toString())) {
-                    s.enabled = false;
-                    if (s.subscribed) toUnsubscribe.add(s);
-                    tags.remove(s.path.toString());
-                }
+        // A tag missing from this scan keeps collecting until the tracker marks it inactive.
+        for (TagState s : new ArrayList<>(tags.values())) {
+            String key = s.path.toString();
+            if (!observedPaths.containsKey(key) && tracker.getActive(TagPathParts.parse(key)) == null) {
+                s.enabled = false;
+                if (s.subscribed) toUnsubscribe.add(s);
+                tags.remove(key);
             }
         }
         subscribe(toSubscribe);
@@ -356,32 +356,31 @@ public final class HistorianCollector {
             return;
         }
         long timeMs = qv.getTimestamp() != null ? qv.getTimestamp().getTime() : System.currentTimeMillis();
-        emitReading(state, qv, timeMs);
+        emitReading(state, qv.getQuality() != null ? qv.getQuality().getCode() : 0, qv.getValue(), timeMs);
     }
 
     void emitDueMaxAgeReadings() {
         long now = System.currentTimeMillis();
         for (TagState s : tags.values()) {
             QualifiedValue last = s.last;
-            if (!s.enabled || s.maxAgeMs <= 0 || last == null || s.metricId == null) {
+            if (!s.enabled || s.maxAgeMs <= 0 || !isGood(last) || s.metricId == null) {
                 continue;
             }
             if (now - s.lastEmitMs >= Math.max(MIN_MAX_AGE_MS, s.maxAgeMs)) {
-                // A new edge-side reading of the unchanged current value, timestamped when it was collected.
-                emitReading(s, last, now);
+                // A new edge-side reading of the unchanged Good value, timestamped when it was collected.
+                emitReading(s, MAX_AGE_QUALITY, last.getValue(), now);
                 maxAgeReadings.incrementAndGet();
             }
         }
     }
 
-    private void emitReading(TagState s, QualifiedValue qv, long timeMs) {
-        int quality = qv.getQuality() != null ? qv.getQuality().getCode() : 0;
-        MetricReading r = readings.create(s.metricId, timeMs * 1000L, quality, qv.getValue());
+    private void emitReading(TagState s, int quality, Object value, long timeMs) {
+        MetricReading r = readings.create(s.metricId, timeMs * 1000L, quality, value);
         s.lastEmitMs = System.currentTimeMillis();
         if (r == null) {
             if (readingsUnsupported.incrementAndGet() <= 20) {
                 logger.warn("Unsupported value type {} on {}; reading not recorded",
-                        qv.getValue() == null ? "null" : qv.getValue().getClass().getName(), s.path);
+                        value == null ? "null" : value.getClass().getName(), s.path);
             }
             return;
         }
@@ -507,7 +506,7 @@ public final class HistorianCollector {
         if (sourceKeyedRule.getError() != null) {
             sb.append("Source-keyed rule error: ").append(sourceKeyedRule.getError()).append('\n');
         }
-        sb.append("Active bindings: ").append(tracker.activeCount()).append('\n');
+        sb.append("Active tags: ").append(tracker.activeCount()).append('\n');
         sb.append("Subscribed (history enabled): ").append(subscribed).append('\n');
         sb.append("Last metadata scan: ").append(lastScanMs > 0 ? ((System.currentTimeMillis() - lastScanMs) / 1000) + " seconds ago, " : "")
                 .append(lastScanSummary).append('\n');
@@ -524,6 +523,21 @@ public final class HistorianCollector {
         sb.append("Batches sent: ").append(batchesSent.get()).append('\n');
         sb.append(client.getDiagnostics());
         return sb.toString();
+    }
+
+    /** The folder-mode root, when it is excluded from metric names. */
+    static TagPathParts nameRoot(ConfigModel config) {
+        String folder = config.getTagFolderPath();
+        if (config.isIncludeRootFolderInNames() || !"folder".equals(config.getTagSelectionMode())
+                || folder == null || folder.isBlank()) {
+            return null;
+        }
+        TagPathParts root = TagPathParts.parse(folder.trim());
+        String path = root.getPath();
+        while (path.endsWith("/")) {
+            path = path.substring(0, path.length() - 1);
+        }
+        return TagPathParts.parse(root.getProvider() == null ? path : "[" + root.getProvider() + "]" + path);
     }
 
     private static String resolveProducerId(GatewayContext context, ConfigModel config) {

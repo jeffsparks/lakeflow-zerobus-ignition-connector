@@ -22,26 +22,38 @@ import java.util.function.LongSupplier;
  * Tracks the last published metadata snapshot of every producer/provider/path binding.
  *
  * A snapshot is published on first discovery, on any relevant change, on reappearance, and (as an inactive
- * snapshot) when a complete inventory no longer contains the binding. Revisions increase per binding and are
- * persisted with the snapshots, so they survive restarts and removal/reappearance.
+ * snapshot) once the binding is missing from {@link #MISSED_SCANS_BEFORE_INACTIVE} consecutive complete inventories.
+ * Incomplete scans never count as a miss. Revisions increase per binding and are
+ * persisted with the snapshots, so they survive restarts and removal/reappearance. The first scan after
+ * construction also re-emits every unchanged persisted snapshot, because snapshots are persisted when emitted and
+ * those still undelivered at shutdown may have been lost.
  */
 public final class MetadataTracker {
     private static final Logger logger = LoggerFactory.getLogger(MetadataTracker.class);
 
     public static final String QUALITY_SYSTEM_IGNITION = "ignition";
+    public static final int MISSED_SCANS_BEFORE_INACTIVE = 2;
 
     private final String producerId;
     private final HierarchyParser hierarchy;
     private final MetricIdentity.SourceKeyedRule sourceKeyedRule;
+    private final TagPathParts nameRoot;
     private final Path stateFile;
     private final LongSupplier clockMs;
     private final Map<String, MetricMetadataEvent> bindings = new LinkedHashMap<>();
+    private final Map<String, Integer> missedScans = new HashMap<>();
+    private boolean republishPending = true;
 
+    /**
+     * @param nameRoot folder whose path is removed from the start of metric names of the tags below it, or null to
+     *                 name every tag by its full provider-free path
+     */
     public MetadataTracker(String producerId, HierarchyParser hierarchy, MetricIdentity.SourceKeyedRule sourceKeyedRule,
-                           Path stateFile, LongSupplier clockMs) {
+                           TagPathParts nameRoot, Path stateFile, LongSupplier clockMs) {
         this.producerId = producerId;
         this.hierarchy = hierarchy;
         this.sourceKeyedRule = sourceKeyedRule;
+        this.nameRoot = nameRoot;
         this.stateFile = stateFile;
         this.clockMs = clockMs;
         load();
@@ -51,8 +63,8 @@ public final class MetadataTracker {
      * Reconciles one scan.
      *
      * @param observed          bindings observed in this scan
-     * @param inventoryComplete true only when the scan covered the whole selection without errors; bindings
-     *                          absent from an incomplete scan are never retired
+     * @param inventoryComplete true only when the scan covered the whole selection without errors; absence from
+     *                          an incomplete scan is not counted as a miss
      * @return snapshots to publish, in order
      */
     public synchronized List<MetricMetadataEvent> reconcile(Collection<ObservedTag> observed, boolean inventoryComplete) {
@@ -62,9 +74,13 @@ public final class MetadataTracker {
         for (ObservedTag tag : observed) {
             String key = key(tag.tag);
             seen.put(key, Boolean.TRUE);
+            missedScans.remove(key);
             MetricMetadataEvent snapshot = snapshotOf(tag);
             MetricMetadataEvent prev = bindings.get(key);
             if (prev != null && withoutVersion(prev).equals(snapshot)) {
+                if (republishPending) {
+                    out.add(prev);
+                }
                 continue;
             }
             MetricMetadataEvent published = snapshot.toBuilder()
@@ -78,15 +94,29 @@ public final class MetadataTracker {
             for (Map.Entry<String, MetricMetadataEvent> e : bindings.entrySet()) {
                 MetricMetadataEvent prev = e.getValue();
                 if (prev.getIsActive() && !seen.containsKey(e.getKey())) {
-                    MetricMetadataEvent retired = prev.toBuilder()
+                    int missed = missedScans.merge(e.getKey(), 1, Integer::sum);
+                    if (missed < MISSED_SCANS_BEFORE_INACTIVE) {
+                        continue;
+                    }
+                    missedScans.remove(e.getKey());
+                    MetricMetadataEvent inactive = prev.toBuilder()
                             .setIsActive(false)
                             .setMetadataObservedAt(now * 1000L)
                             .setMetadataRevision(nextRevision(prev, now))
                             .build();
-                    e.setValue(retired);
-                    out.add(retired);
+                    e.setValue(inactive);
+                    seen.put(e.getKey(), Boolean.TRUE);
+                    out.add(inactive);
                 }
             }
+        }
+        if (republishPending) {
+            for (Map.Entry<String, MetricMetadataEvent> e : bindings.entrySet()) {
+                if (!seen.containsKey(e.getKey())) {
+                    out.add(e.getValue());
+                }
+            }
+            republishPending = false;
         }
         if (!out.isEmpty()) {
             save();
@@ -109,8 +139,9 @@ public final class MetadataTracker {
     }
 
     MetricMetadataEvent snapshotOf(ObservedTag tag) {
-        MetricIdentity identity = MetricIdentity.resolve(tag.tag, tag.sourceRef, sourceKeyedRule);
-        HierarchyParser.Result parsed = hierarchy.parse(tag.tag.getPath());
+        String name = metricName(tag.tag);
+        MetricIdentity identity = MetricIdentity.resolve(tag.tag, name, tag.sourceRef, sourceKeyedRule);
+        HierarchyParser.Result parsed = hierarchy.parse(name);
         MetricMetadataEvent.Builder b = MetricMetadataEvent.newBuilder()
                 .setMetricId(identity.getMetricId())
                 .setProducerId(producerId)
@@ -132,6 +163,22 @@ public final class MetadataTracker {
         if (tag.engineeringUnits != null && !tag.engineeringUnits.isEmpty()) b.setEngineeringUnits(tag.engineeringUnits);
         if (tag.description != null && !tag.description.isEmpty()) b.setDescription(tag.description);
         return b.build();
+    }
+
+    /** Tag paths are case-insensitive in Ignition, so the root is matched ignoring case. */
+    String metricName(TagPathParts tag) {
+        String path = tag.getPath();
+        if (nameRoot == null || nameRoot.getPath().isEmpty()) {
+            return path;
+        }
+        if (nameRoot.getProvider() != null && !nameRoot.getProvider().equalsIgnoreCase(tag.getProvider())) {
+            return path;
+        }
+        int len = nameRoot.getPath().length();
+        if (path.length() > len + 1 && path.charAt(len) == '/' && path.regionMatches(true, 0, nameRoot.getPath(), 0, len)) {
+            return path.substring(len + 1);
+        }
+        return path;
     }
 
     private static MetricMetadataEvent withoutVersion(MetricMetadataEvent e) {

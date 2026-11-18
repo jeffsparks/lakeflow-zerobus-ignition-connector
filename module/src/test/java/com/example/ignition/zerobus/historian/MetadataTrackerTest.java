@@ -19,9 +19,14 @@ public class MetadataTrackerTest {
     private final AtomicLong clock = new AtomicLong(1_000L);
 
     private MetadataTracker tracker() {
+        return tracker(null);
+    }
+
+    private MetadataTracker tracker(String nameRoot) {
         return new MetadataTracker("gw1",
                 new HierarchyParser(List.of("site", "area", "work_center", "work_unit", "device")),
                 MetricIdentity.SourceKeyedRule.compile(true, "/raw/"),
+                nameRoot == null ? null : TagPathParts.parse(nameRoot),
                 tempDir.resolve("state.bin"),
                 clock::get);
     }
@@ -51,6 +56,32 @@ public class MetadataTrackerTest {
     }
 
     @Test
+    public void excludedRootFolderIsRemovedFromMetricNames() {
+        MetadataTracker t = tracker("[MQTT Engine]spb_telemetry");
+        MetricMetadataEvent e = t.reconcile(
+                List.of(tag("[MQTT Engine]spb_telemetry/s/a/wc/wu/dev/raw/temp", null, true, 0L)), true).get(0);
+        assertEquals("spb_telemetry/s/a/wc/wu/dev/raw/temp", e.getTagPath(), "tag_path stays the full path");
+        assertEquals("name", e.getIdentityMode());
+        assertEquals("s/a/wc/wu/dev/raw/temp", e.getIdentityKey());
+        assertEquals(MetricIdentity.sha1Hex("s/a/wc/wu/dev/raw/temp"), e.getMetricId());
+        assertEquals("s", e.getHierarchy(0).getLevelValue());
+        assertEquals("raw/temp", e.getDeviceTagName());
+
+        MetricMetadataEvent src = t.reconcile(
+                List.of(tag("[mqtt engine]SPB_TELEMETRY/s/a/wc/wu/dev/raw/x", "[PLC]T1", true, 0L)), true).get(0);
+        assertEquals("s/a/wc/wu::[PLC]T1", src.getIdentityKey(), "root matched ignoring case; source scope below it");
+    }
+
+    @Test
+    public void rootFolderIsKeptOutsideTheRootAndForSiblingPrefixes() {
+        MetadataTracker t = tracker("[MQTT Engine]spb_telemetry");
+        assertEquals("other/a/b", t.metricName(TagPathParts.parse("[MQTT Engine]other/a/b")));
+        assertEquals("spb_telemetry2/a", t.metricName(TagPathParts.parse("[MQTT Engine]spb_telemetry2/a")));
+        assertEquals("spb_telemetry/a", t.metricName(TagPathParts.parse("[default]spb_telemetry/a")));
+        assertEquals("a/b", tracker("spb_telemetry").metricName(TagPathParts.parse("[default]spb_telemetry/a/b")));
+    }
+
+    @Test
     public void unchangedObservationIsNotRepublished() {
         MetadataTracker t = tracker();
         t.reconcile(List.of(tag("[p]a/b", null, true, 0L)), true);
@@ -69,37 +100,54 @@ public class MetadataTrackerTest {
     }
 
     @Test
-    public void removalOnlyRetiresAfterCompleteInventory() {
+    public void markedInactiveOnlyAfterTwoConsecutiveCompleteScansWithoutIt() {
         MetadataTracker t = tracker();
         MetricMetadataEvent first = t.reconcile(List.of(tag("[p]a/b", null, true, 5000L)), true).get(0);
-        assertTrue(t.reconcile(List.of(), false).isEmpty(), "incomplete scan must not retire");
+        assertTrue(t.reconcile(List.of(), true).isEmpty(), "first miss");
+        assertTrue(t.reconcile(List.of(), false).isEmpty(), "incomplete scan is not a miss");
+        assertNotNull(t.getActive(TagPathParts.parse("[p]a/b")), "still collecting");
 
         List<MetricMetadataEvent> out = t.reconcile(List.of(), true);
         assertEquals(1, out.size());
-        MetricMetadataEvent retired = out.get(0);
-        assertFalse(retired.getIsActive());
-        assertEquals(5000L, retired.getHistoryMaxAgeMs(), "last-known settings retained");
-        assertEquals(first.getMetricId(), retired.getMetricId());
-        assertTrue(retired.getMetadataRevision() > first.getMetadataRevision());
-        assertTrue(t.reconcile(List.of(), true).isEmpty(), "already retired");
+        MetricMetadataEvent inactive = out.get(0);
+        assertFalse(inactive.getIsActive());
+        assertEquals(5000L, inactive.getHistoryMaxAgeMs(), "last-known settings retained");
+        assertEquals(first.getMetricId(), inactive.getMetricId());
+        assertTrue(inactive.getMetadataRevision() > first.getMetadataRevision());
+        assertNull(t.getActive(TagPathParts.parse("[p]a/b")));
+        assertTrue(t.reconcile(List.of(), true).isEmpty(), "already inactive");
     }
 
     @Test
-    public void sourceKeyedRenameRetiresOldBindingAndKeepsMetricId() {
+    public void reappearanceResetsMissedScans() {
+        MetadataTracker t = tracker();
+        t.reconcile(List.of(tag("[p]a/b", null, true, 0L)), true);
+        assertTrue(t.reconcile(List.of(), true).isEmpty());
+        assertTrue(t.reconcile(List.of(tag("[p]a/b", null, true, 0L)), false).isEmpty(), "seen in an incomplete scan");
+        assertTrue(t.reconcile(List.of(), true).isEmpty(), "first miss again");
+        assertFalse(t.reconcile(List.of(), true).get(0).getIsActive());
+    }
+
+    @Test
+    public void sourceKeyedRenameKeepsMetricIdAndMarksOldPathInactive() {
         MetadataTracker t = tracker();
         String id = t.reconcile(List.of(tag("[p]s/a/wc/wu/dev1/raw/x", "[PLC]N7:0", true, 0L)), true).get(0).getMetricId();
-        List<MetricMetadataEvent> out = t.reconcile(List.of(tag("[p]s/a/wc/wu/dev2/raw/x", "[PLC]N7:0", true, 0L)), true);
-        assertEquals(2, out.size());
+        ObservedTag renamed = tag("[p]s/a/wc/wu/dev2/raw/x", "[PLC]N7:0", true, 0L);
+        List<MetricMetadataEvent> out = t.reconcile(List.of(renamed), true);
+        assertEquals(1, out.size());
         assertTrue(out.get(0).getIsActive());
         assertEquals(id, out.get(0).getMetricId());
-        assertFalse(out.get(1).getIsActive());
-        assertEquals("s/a/wc/wu/dev1/raw/x", out.get(1).getTagPath());
+        out = t.reconcile(List.of(renamed), true);
+        assertEquals(1, out.size());
+        assertFalse(out.get(0).getIsActive());
+        assertEquals("s/a/wc/wu/dev1/raw/x", out.get(0).getTagPath());
     }
 
     @Test
     public void revisionsSurviveRestartAndReappearance() {
         MetadataTracker t1 = tracker();
         long r1 = t1.reconcile(List.of(tag("[p]a/b", null, true, 0L)), true).get(0).getMetadataRevision();
+        t1.reconcile(List.of(), true);
         long r2 = t1.reconcile(List.of(), true).get(0).getMetadataRevision();
 
         MetadataTracker t2 = tracker();
@@ -108,5 +156,20 @@ public class MetadataTrackerTest {
         assertTrue(back.getIsActive());
         assertTrue(r1 < r2 && r2 < back.getMetadataRevision());
         assertTrue(t2.reconcile(List.of(tag("[p]a/b", null, true, 0L)), true).isEmpty(), "state restored");
+    }
+
+    @Test
+    public void firstScanAfterRestartRepublishesPersistedSnapshotsUnchanged() {
+        MetadataTracker t1 = tracker();
+        MetricMetadataEvent a = t1.reconcile(List.of(tag("[p]a/b", null, true, 0L), tag("[p]a/c", null, true, 0L)), true).get(0);
+        t1.reconcile(List.of(tag("[p]a/b", null, true, 0L)), true);
+        MetricMetadataEvent inactive = t1.reconcile(List.of(tag("[p]a/b", null, true, 0L)), true).get(0);
+        assertFalse(inactive.getIsActive());
+
+        clock.addAndGet(10_000L);
+        MetadataTracker t2 = tracker();
+        List<MetricMetadataEvent> out = t2.reconcile(List.of(tag("[p]a/b", null, true, 0L)), false);
+        assertEquals(List.of(a, inactive), out, "same revisions, inactive binding included");
+        assertTrue(t2.reconcile(List.of(tag("[p]a/b", null, true, 0L)), false).isEmpty(), "only the first scan");
     }
 }

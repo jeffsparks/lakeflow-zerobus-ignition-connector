@@ -88,8 +88,10 @@ CREATE TABLE IF NOT EXISTS metric_registry (
 )
 TBLPROPERTIES (delta.appendOnly = true);
 
--- Current state of each producer/provider/path binding (one row per binding, not per metric).
-CREATE TABLE IF NOT EXISTS metric_catalog (
+-- Current state of every name a metric is published under: one row per producer + tag provider + tag path.
+-- is_active is true while the name is in its producer's latest complete declaration (for the connector, its latest
+-- complete tag scan). A producer going offline does not change is_active.
+CREATE TABLE IF NOT EXISTS metric_names (
   metric_id             STRING,
   producer_id           STRING,
   tag_provider          STRING,
@@ -98,9 +100,21 @@ CREATE TABLE IF NOT EXISTS metric_catalog (
   hierarchy             ARRAY<STRUCT<level_name: STRING, level_value: STRING>>,
   device_tag_name       STRING,
   source_ref            STRING,
-  data_type             STRING,
+  metadata_observed_at  TIMESTAMP
+);
+
+-- One resolved row per metric, derived from the latest snapshot of each of its active names:
+--   history_enabled      true if any active name has history enabled
+--   history_max_age_ms   shortest positive interval among history-enabled names, otherwise the value of the most
+--                        recently changed name (0 or NULL = no max-age readings)
+--   other settings       from the most recently changed active name
+--   is_active            true if any name is active; when none is, the last resolved settings are kept
+CREATE TABLE IF NOT EXISTS metric_metadata (
+  metric_id             STRING,
+  is_active             BOOLEAN,
   history_enabled       BOOLEAN,
   history_max_age_ms    BIGINT,
+  data_type             STRING,
   quality_system        STRING,
   engineering_units     STRING,
   description           STRING,

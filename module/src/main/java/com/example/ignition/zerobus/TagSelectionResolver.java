@@ -13,7 +13,9 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
@@ -236,9 +238,9 @@ public final class TagSelectionResolver {
         }
 
         List<TagPath> out = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
 
         String continuation = null;
-        String lastContinuation = null;
         int totalSeen = 0;
         int page = 0;
         long startMs = System.currentTimeMillis();
@@ -262,6 +264,7 @@ public final class TagSelectionResolver {
 
             Collection<NodeDescription> nodes = res != null ? res.getResults() : null;
             int nodeCount = nodes == null ? 0 : nodes.size();
+            int newNodes = 0;
             if (nodes != null) {
                 for (NodeDescription nd : nodes) {
                     totalSeen++;
@@ -270,39 +273,40 @@ public final class TagSelectionResolver {
                         return new Selection(out, false);
                     }
                     if (nd == null) continue;
-                    if (nd.getObjectType() != TagObjectType.AtomicTag) continue;
                     TagPath fp = nd.getFullPath();
-                    if (fp == null) continue;
-                    out.add(fp);
+                    if (fp == null || !seen.add(fp.toString())) continue;
+                    newNodes++;
+                    if (nd.getObjectType() == TagObjectType.AtomicTag) {
+                        out.add(fp);
+                    }
                 }
             }
 
-            lastContinuation = continuation;
             continuation = (res != null) ? res.getContinuationPoint() : null;
+            boolean more = continuation != null && !continuation.isBlank();
 
-            // Guardrails:
-            // Some providers can return empty pages but keep returning continuation points indefinitely.
-            // Stop early to avoid infinite loops / runaway browsing.
-            if (nodeCount == 0 && continuation != null && !continuation.isBlank()) {
-                if (lastContinuation != null && continuation.equals(lastContinuation)) {
-                    logger.warn("Browse returned 0 nodes and repeated continuationPoint for root={}; stopping to avoid infinite loop", root.toString());
-                    return new Selection(out, false);
-                }
-                logger.warn("Browse returned 0 nodes but continuationPoint is set for root={}; stopping to avoid runaway browse", root.toString());
-                return new Selection(out, false);
-            }
-            if (continuation != null && lastContinuation != null && continuation.equals(lastContinuation)) {
-                logger.warn("Browse returned repeated continuationPoint for root={}; stopping to avoid infinite loop", root.toString());
-                return new Selection(out, false);
-            }
             if (config.isDebugLogging()) {
                 long elapsed = System.currentTimeMillis() - startMs;
-                logger.info("Browse progress root={} page={} nodes={} atomic={} totalSeen={} cont={} elapsedMs={}",
-                        root.toString(), page, nodeCount, out.size(), totalSeen,
+                logger.info("Browse progress root={} page={} nodes={} new={} atomic={} totalSeen={} cont={} elapsedMs={}",
+                        root.toString(), page, nodeCount, newNodes, out.size(), totalSeen,
                         (continuation == null ? "null" : (continuation.isBlank() ? "<blank>" : "<set>")),
                         elapsed);
             }
-        } while (continuation != null && !continuation.isBlank());
+
+            if (more && newNodes == 0) {
+                // Some providers (e.g. MQTT Engine) keep returning a continuation point after the last page and
+                // repeat nodes already returned; that is the end of the browse. A page with no nodes at all while
+                // more are promised is treated as an incomplete browse.
+                if (nodeCount == 0) {
+                    logger.warn("Browse returned 0 nodes but continuationPoint is set for root={}; stopping early", root.toString());
+                    return new Selection(out, false);
+                }
+                break;
+            }
+            if (!more) {
+                break;
+            }
+        } while (true);
 
         return new Selection(out, true);
     }

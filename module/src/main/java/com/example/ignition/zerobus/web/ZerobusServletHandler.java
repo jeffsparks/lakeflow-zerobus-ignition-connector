@@ -187,7 +187,9 @@ public final class ZerobusServletHandler {
             boolean ok = runtime.testConnection();
             JsonObject resp = new JsonObject();
             resp.addProperty("success", ok);
-            resp.addProperty("message", ok ? "Connection test successful" : "Connection test failed");
+            String error = ok ? null : runtime.getLastConnectionTestError();
+            resp.addProperty("message", ok ? "Connection test successful"
+                    : "Connection test failed" + (error == null || error.isBlank() ? "" : ": " + error));
             return Response.json(ok ? 200 : 400, gson.toJson(resp));
         }
 

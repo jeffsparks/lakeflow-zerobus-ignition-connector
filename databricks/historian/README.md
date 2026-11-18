@@ -6,19 +6,39 @@ processed tables.
 | Table | Written by | Purpose |
 |---|---|---|
 | `metrics_ingest` | connector (Zerobus) | Append-only reading landing table; may contain retries |
-| `metric_metadata_events` | connector (Zerobus) | Append-only metadata snapshots per producer/provider/path binding |
+| `metric_metadata_events` | connector (Zerobus) | Append-only metadata snapshots, one per change of a producer/provider/path; the audit history of every name and setting |
 | `collector_events` | connector (Zerobus) | Collector startup, heartbeat, and shutdown events |
 | `metrics` | pipeline | Permanent deduplicated readings |
 | `metric_registry` | pipeline | Permanent `metric_id` → `metric_num` mapping |
-| `metric_catalog` | pipeline | Current state of each binding |
+| `metric_names` | pipeline | Current state of every name a metric is published under (producer + provider + tag path) |
+| `metric_metadata` | pipeline | One resolved row per `metric_id`: history settings, data type, units, description, `is_active` |
+
+## How data lands and is processed
+
+1. The connector reads its tag selection every **Metadata Check Interval**. It appends a snapshot to
+   `metric_metadata_events` when a tag is first seen, when any of its settings change, and when the tag is marked
+   as no longer existing.
+2. For each history-enabled tag, the connector appends readings to `metrics_ingest` (see
+   [Readings sent by the connector](#readings-sent-by-the-connector)).
+3. The pipeline copies new readings into `metrics`, dropping duplicates.
+4. For each new metadata snapshot, the pipeline:
+   - registers a new `metric_id` in `metric_registry`;
+   - updates that name's row in `metric_names`;
+   - re-resolves the metric's row in `metric_metadata`.
+
+The connector only appends to the landing tables. Every other table is derived by the pipeline.
 
 ## Contracts
 
 **metric_id** is the lowercase hex SHA-1 of the UTF-8 `identity_key`:
 
-- `name` mode: `identity_key` is the tag path without the `[provider]` prefix, case-sensitive.
-- `source` mode: `identity_key` is `<first four non-leaf path segments>::<source_ref>` (fewer segments for
-  shallower paths). Applies when the source-keyed rule is enabled, its regex is found in the full tag path
+- The **metric name** is the tag path without the `[provider]` prefix. In folder selection mode with
+  **Include Root Folder in Metric Names** unchecked, the name starts below the Tag Folder Path. For example,
+  with root `[MQTT Engine]spb_telemetry`, the tag `spb_telemetry/site/area/Tag` is named `site/area/Tag`. The
+  hierarchy levels and `device_tag_name` are parsed from the name. `tag_path` always holds the full path.
+- `name` mode: `identity_key` is the metric name, case-sensitive.
+- `source` mode: `identity_key` is `<first four non-leaf segments of the name>::<source_ref>` (fewer segments
+  for shallower names). Applies when the source-keyed rule is enabled, its regex is found in the full tag path
   (including `[provider]`), and the tag has a source reference such as `opcItemPath`.
 
 Other producers can write the same landing tables if they follow these rules.
@@ -27,8 +47,36 @@ Other producers can write the same landing tables if they follow these rules.
 (NULL-safe across every `value_*` column). The pipeline keeps the earliest `ingest_time`.
 `time` is the reading's edge timestamp, and `ingest_time` is the landing commit time in Databricks.
 
-**Metadata** snapshots carry a `metadata_revision` that increases for each binding. The catalog row for a
-binding changes only when a snapshot carries the highest revision seen for that binding.
+**Metadata** snapshots carry a `metadata_revision` that increases for each producer/provider/path. A
+`metric_names` row changes only when a snapshot carries the highest revision seen for that name.
+
+**is_active** on a name is true while the name is in its producer's latest complete declaration. For the
+connector, that is its latest complete scan of the tag selection. A producer going offline does not make its names
+inactive. Narrowing the tag selection marks the excluded tags inactive.
+
+**metric_metadata** is resolved from the latest snapshot of each of the metric's active names. One metric should
+have one publisher; these rules give a predictable result when it has more:
+
+- `history_enabled`: true if any active name has history enabled.
+- `history_max_age_ms`: the shortest positive interval among history-enabled names. If there is none, the value
+  of the most recently changed name. 0 or NULL means no max-age readings.
+- `data_type`, `quality_system`, `engineering_units`, `description`: from the most recently changed active name.
+- `is_active`: true if any name is active. When no name is active, the last resolved settings are kept.
+
+## Readings sent by the connector
+
+- **On change.** A history-enabled tag sends a reading on every value or quality change, with the tag's own
+  timestamp and quality.
+- **Max-age readings.** If a history-enabled tag's last value was Good and nothing has been sent for longer than
+  its Ignition **Max Time Between Samples** (minimum 1 second), the connector re-sends that value. The reading is
+  timestamped when it is sent and has quality **203 (Good_Backfill)**, so it can be told apart from a real
+  change. A value that is not Good stops max-age readings until the next Good value. Max-age readings are made by
+  the connector from its own tag settings, not by the pipeline.
+- **Tags no longer present.** A tag missing from one complete scan is still collected. A tag missing from two
+  complete scans in a row is marked inactive (an `is_active = false` snapshot), and its collection stops. A scan
+  that fails or can't read the whole selection does not count.
+- **Startup Delay.** The first tag scan after the collector starts waits this long (default 0 ms). Use it when tag
+  providers from other modules, such as MQTT Engine, need time to load after a gateway restart.
 
 ## Deployment order
 
@@ -42,7 +90,7 @@ binding changes only when a snapshot carries the highest revision seen for that 
 
    ForEachBatch sinks are in Public Preview and may require the pipeline's **Preview** channel. The
    pipeline's run-as identity needs `SELECT` on the landing tables and `SELECT, MODIFY` on `metrics`,
-   `metric_registry`, and `metric_catalog`.
+   `metric_registry`, `metric_names`, and `metric_metadata`.
 4. Configure the connector's target schema (`catalog.schema`) and enable it.
 
 ## Operational notes
@@ -53,7 +101,7 @@ binding changes only when a snapshot carries the highest revision seen for that 
 - **ingest_time without change data feed.** If change data feed is unavailable on `metrics_ingest`, set
   `historian.ingest_time_source=file`. The pipeline then uses the landing file's modification time.
 - **Diagnostic views.** `metric_identity_conflicts` lists `metric_id`s observed with more than one identity.
-  These are not registered automatically. `metric_binding_conflicts` lists shared metrics whose active
-  bindings disagree on `data_type` or `quality_system`.
+  These are not registered automatically. `metric_name_conflicts` (development aid) lists metrics with more
+  than one active name, along with their producers, data types, quality systems, and history settings.
 - **Zerobus target tables.** Zerobus rejects tables with column defaults, identity columns, or generated
   columns, so the three landing tables have none.

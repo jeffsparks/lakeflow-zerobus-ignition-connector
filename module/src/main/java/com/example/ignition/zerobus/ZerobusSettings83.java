@@ -61,6 +61,7 @@ public class ZerobusSettings83 extends PersistentRecord {
     public static final BooleanField SourceKeyedEnabled = new BooleanField(META, "SourceKeyedEnabled");
     public static final StringField SourceKeyedTagRegex = new StringField(META, "SourceKeyedTagRegex");
     public static final LongField MetadataCheckIntervalMs = new LongField(META, "MetadataCheckIntervalMs");
+    public static final LongField StartupDelayMs = new LongField(META, "StartupDelayMs");
 
     // Tag Selection
     public static final BooleanField EnableDirectSubscriptions = new BooleanField(META, "EnableDirectSubscriptions");
@@ -69,6 +70,7 @@ public class ZerobusSettings83 extends PersistentRecord {
     public static final StringField TagPathPattern = new StringField(META, "TagPathPattern");
     public static final StringField ExplicitTagPaths = new StringField(META, "ExplicitTagPaths"); // comma-separated
     public static final BooleanField IncludeSubfolders = new BooleanField(META, "IncludeSubfolders");
+    public static final BooleanField IncludeRootFolderInNames = new BooleanField(META, "IncludeRootFolderInNames");
 
     // Performance
     public static final IntField BatchSize = new IntField(META, "BatchSize");
@@ -127,11 +129,13 @@ public class ZerobusSettings83 extends PersistentRecord {
         SourceKeyedEnabled.setDefault(false);
         SourceKeyedTagRegex.setDefault("");
         MetadataCheckIntervalMs.setDefault(300_000L);
+        StartupDelayMs.setDefault(0L);
         EnableDirectSubscriptions.setDefault(true);
         TagSelectionMode.setDefault("explicit");
         TagFolderPath.setDefault("");
         TagPathPattern.setDefault("");
         IncludeSubfolders.setDefault(true);
+        IncludeRootFolderInNames.setDefault(true);
         BatchSize.setDefault(200);
         BatchFlushIntervalMs.setDefault(500L);
         MaxQueueSize.setDefault(10000);
@@ -199,11 +203,13 @@ public class ZerobusSettings83 extends PersistentRecord {
         config.setSourceKeyedEnabled(getBoolean(SourceKeyedEnabled));
         config.setSourceKeyedTagRegex(getString(SourceKeyedTagRegex));
         config.setMetadataCheckIntervalMs(getLong(MetadataCheckIntervalMs));
+        config.setStartupDelayMs(getLong(StartupDelayMs));
         config.setEnableDirectSubscriptions(getBoolean(EnableDirectSubscriptions));
         config.setTagSelectionMode(getString(TagSelectionMode));
         config.setTagFolderPath(getString(TagFolderPath));
         config.setTagPathPattern(getString(TagPathPattern));
         config.setIncludeSubfolders(getBoolean(IncludeSubfolders));
+        config.setIncludeRootFolderInNames(getBoolean(IncludeRootFolderInNames));
 
         String tagPathsStr = getString(ExplicitTagPaths);
         List<String> tagPaths = new ArrayList<>();
@@ -272,11 +278,13 @@ public class ZerobusSettings83 extends PersistentRecord {
         setBoolean(SourceKeyedEnabled, config.isSourceKeyedEnabled());
         setString(SourceKeyedTagRegex, config.getSourceKeyedTagRegex());
         setLong(MetadataCheckIntervalMs, config.getMetadataCheckIntervalMs());
+        setLong(StartupDelayMs, config.getStartupDelayMs());
         setBoolean(EnableDirectSubscriptions, config.isEnableDirectSubscriptions());
         setString(TagSelectionMode, config.getTagSelectionMode());
         setString(TagFolderPath, config.getTagFolderPath());
         setString(TagPathPattern, config.getTagPathPattern());
         setBoolean(IncludeSubfolders, config.isIncludeSubfolders());
+        setBoolean(IncludeRootFolderInNames, config.isIncludeRootFolderInNames());
         setString(ExplicitTagPaths, String.join(",", config.getExplicitTagPaths()));
 
         setInt(BatchSize, config.getBatchSize());

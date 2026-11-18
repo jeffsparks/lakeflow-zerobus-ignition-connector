@@ -50,10 +50,13 @@ The 8.3 module writes historian readings, metadata snapshots, and collector even
 the configured **Target Schema** (`catalog.schema`), and a Lakeflow pipeline maintains the processed tables.
 Create the tables, grants, and pipeline as described in `databricks/historian/README.md`.
 
-Collection follows each tag's Ignition history settings: tags in the tag selection with **History Enabled** produce
-readings on every value or quality change, plus a reading of the current value whenever **Max Time Between Samples**
-elapses without one. For high tag rates, enable store-and-forward and raise **Batch Size** so each acknowledged batch
-carries more readings.
+Collection follows each tag's Ignition history settings. Tags in the tag selection with **History Enabled** produce
+readings on every value or quality change. While the last value is Good, they also produce a max-age reading
+(quality 203, Good_Backfill) whenever **Max Time Between Samples** elapses without a reading. A tag is marked as no
+longer existing after it is missing from two complete metadata checks in a row. If tag providers from other modules
+(for example MQTT Engine) load slowly after a gateway restart, set **Startup Delay (ms)** to postpone the first tag
+read. For high tag rates, enable store-and-forward and raise **Batch Size** so each acknowledged batch carries more
+readings. Details: `databricks/historian/README.md`.
 
 #### Zerobus mode (`sinkMode=zerobus`) - Ignition 8.1 single Delta table
 

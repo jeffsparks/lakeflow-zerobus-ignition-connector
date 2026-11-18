@@ -14,9 +14,11 @@ import java.util.regex.PatternSyntaxException;
  * Contract (must not change once records exist):
  * <ul>
  *   <li>metric_id = lowercase hex SHA-1 of the UTF-8 bytes of identity_key.</li>
- *   <li>name mode: identity_key = the provider-free tag path, exactly as configured (case-sensitive).</li>
+ *   <li>The metric name is the provider-free tag path, or the part below the folder-mode root when the root
+ *       folder is excluded from names.</li>
+ *   <li>name mode: identity_key = the metric name, exactly as configured (case-sensitive).</li>
  *   <li>source mode: identity_key = scope + "::" + source_ref, where scope is the first four
- *       non-leaf path segments joined by "/" (fewer when the path is shallower) and source_ref is the
+ *       non-leaf segments of the metric name joined by "/" (fewer when it is shallower) and source_ref is the
  *       underlying source reference (normally opcItemPath) exactly as configured.</li>
  * </ul>
  * Source mode applies only when the source-keyed rule is enabled, its regex matches the full tag path
@@ -41,11 +43,17 @@ public final class MetricIdentity {
     }
 
     public static MetricIdentity resolve(TagPathParts tag, String sourceRef, SourceKeyedRule rule) {
+        return resolve(tag, tag.getPath(), sourceRef, rule);
+    }
+
+    /** @param name the metric name; the source-keyed regex is still matched against the full tag path */
+    public static MetricIdentity resolve(TagPathParts tag, String name, String sourceRef, SourceKeyedRule rule) {
         Objects.requireNonNull(tag, "tag");
+        Objects.requireNonNull(name, "name");
         if (rule != null && rule.matches(tag.toFullPath()) && sourceRef != null && !sourceRef.isBlank()) {
-            return new MetricIdentity(MODE_SOURCE, sourceScope(tag.getPath()) + SOURCE_SEPARATOR + sourceRef);
+            return new MetricIdentity(MODE_SOURCE, sourceScope(name) + SOURCE_SEPARATOR + sourceRef);
         }
-        return new MetricIdentity(MODE_NAME, tag.getPath());
+        return new MetricIdentity(MODE_NAME, name);
     }
 
     static String sourceScope(String path) {

@@ -148,6 +148,9 @@ public class ConfigModel implements Serializable {
     /** Interval between tag metadata checks (milliseconds) */
     private long metadataCheckIntervalMs = 300_000L;
 
+    /** Delay before the historian's first tag read after it starts (milliseconds) */
+    private long startupDelayMs = 0L;
+
     // === Tag Selection Settings ===
     
     /**
@@ -171,6 +174,12 @@ public class ConfigModel implements Serializable {
     
     /** Include subfolders when using folder mode */
     private boolean includeSubfolders = true;
+
+    /**
+     * Folder mode only: when false, historian metric names (identity, hierarchy, device tag name) start below
+     * tagFolderPath instead of at the provider root
+     */
+    private boolean includeRootFolderInNames = true;
     
     // === Batching & Performance Settings ===
     
@@ -512,6 +521,14 @@ public class ConfigModel implements Serializable {
         this.metadataCheckIntervalMs = metadataCheckIntervalMs;
     }
 
+    public long getStartupDelayMs() {
+        return startupDelayMs;
+    }
+
+    public void setStartupDelayMs(long startupDelayMs) {
+        this.startupDelayMs = startupDelayMs;
+    }
+
     public String getTagSelectionMode() {
         return tagSelectionMode;
     }
@@ -558,6 +575,14 @@ public class ConfigModel implements Serializable {
     
     public void setIncludeSubfolders(boolean includeSubfolders) {
         this.includeSubfolders = includeSubfolders;
+    }
+
+    public boolean isIncludeRootFolderInNames() {
+        return includeRootFolderInNames;
+    }
+
+    public void setIncludeRootFolderInNames(boolean includeRootFolderInNames) {
+        this.includeRootFolderInNames = includeRootFolderInNames;
     }
     
     public int getBatchSize() {
@@ -996,6 +1021,10 @@ public class ConfigModel implements Serializable {
             errors.add("Metadata check interval must be between 10000ms and 86400000ms");
         }
 
+        if (startupDelayMs < 0L || startupDelayMs > 3_600_000L) {
+            errors.add("Startup delay must be between 0ms and 3600000ms");
+        }
+
         if (batchSize <= 0 || batchSize > 10000) {
             errors.add("Batch size must be between 1 and 10000");
         }
@@ -1197,12 +1226,14 @@ public class ConfigModel implements Serializable {
             || this.sourceKeyedEnabled != newConfig.sourceKeyedEnabled
             || !Objects.equals(this.sourceKeyedTagRegex, newConfig.sourceKeyedTagRegex)
             || this.metadataCheckIntervalMs != newConfig.metadataCheckIntervalMs
+            || this.startupDelayMs != newConfig.startupDelayMs
             || this.enableDirectSubscriptions != newConfig.enableDirectSubscriptions
             || !Objects.equals(this.tagSelectionMode, newConfig.tagSelectionMode)
             || !Objects.equals(this.tagFolderPath, newConfig.tagFolderPath)
             || !Objects.equals(this.tagPathPattern, newConfig.tagPathPattern)
             || !Objects.equals(this.explicitTagPaths, newConfig.explicitTagPaths)
             || this.includeSubfolders != newConfig.includeSubfolders
+            || this.includeRootFolderInNames != newConfig.includeRootFolderInNames
             || this.batchSize != newConfig.batchSize
             || this.batchFlushIntervalMs != newConfig.batchFlushIntervalMs
             || this.maxQueueSize != newConfig.maxQueueSize
@@ -1259,12 +1290,14 @@ public class ConfigModel implements Serializable {
         this.sourceKeyedEnabled = other.sourceKeyedEnabled;
         this.sourceKeyedTagRegex = other.sourceKeyedTagRegex;
         this.metadataCheckIntervalMs = other.metadataCheckIntervalMs;
+        this.startupDelayMs = other.startupDelayMs;
         this.enableDirectSubscriptions = other.enableDirectSubscriptions;
         this.tagSelectionMode = other.tagSelectionMode;
         this.tagFolderPath = other.tagFolderPath;
         this.tagPathPattern = other.tagPathPattern;
         this.explicitTagPaths = new ArrayList<>(other.explicitTagPaths);
         this.includeSubfolders = other.includeSubfolders;
+        this.includeRootFolderInNames = other.includeRootFolderInNames;
         this.batchSize = other.batchSize;
         this.batchFlushIntervalMs = other.batchFlushIntervalMs;
         this.maxQueueSize = other.maxQueueSize;
