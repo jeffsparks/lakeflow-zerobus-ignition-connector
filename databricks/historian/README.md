@@ -19,7 +19,9 @@ processed tables.
    `metric_metadata_events` when a tag is first seen, when any of its settings change, and when the tag is marked
    as no longer existing.
 2. For each history-enabled tag, the connector appends readings to `metrics_ingest` (see
-   [Readings sent by the connector](#readings-sent-by-the-connector)).
+   [Readings sent by the connector](#readings-sent-by-the-connector)). With **Log All Selected Tags (Ignore
+   History Enabled)** checked, every selected tag is collected; the snapshots still record each tag's own
+   History Enabled value in `history_enabled`.
 3. The pipeline copies new readings into `metrics`, dropping duplicates.
 4. For each new metadata snapshot, the pipeline:
    - registers a new `metric_id` in `metric_registry`;
@@ -39,7 +41,9 @@ The connector only appends to the landing tables. Every other table is derived b
 - `name` mode: `identity_key` is the metric name, case-sensitive.
 - `source` mode: `identity_key` is `<first four non-leaf segments of the name>::<source_ref>` (fewer segments
   for shallower names). Applies when the source-keyed rule is enabled, its regex is found in the full tag path
-  (including `[provider]`), and the tag has a source reference such as `opcItemPath`.
+  (including `[provider]`), and the tag has a source reference. The connector reads it from `opcItemPath`, or
+  from the tag property named in **OPC Item Path Property** (for example a custom property `cp-opcItemPath` on
+  MQTT Engine tags, which do not carry the edge tag's `opcItemPath`).
 
 Other producers can write the same landing tables if they follow these rules.
 

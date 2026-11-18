@@ -802,17 +802,26 @@
                                 <label for="sourceKeyedEnabled">Enable Source-Keyed Tag Regex</label>
                             </div>
                             <small class="form-help">
-                                Matching tags with an OPC item path use their first four path segments plus the source as identity,
-                                so renaming deeper folders or the tag keeps its history.
+                                Matching tags with a source reference (see OPC Item Path Property) use their first four path segments
+                                plus the source as identity, so renaming deeper folders or the tag keeps its history.
                             </small>
                         </div>
                         <div class="form-group">
                             <label for="sourceKeyedTagRegex">Source-Keyed Tag Regex</label>
                             <input type="text" class="form-control" id="sourceKeyedTagRegex" name="sourceKeyedTagRegex"
-                                   placeholder="/raw/">
+                                   placeholder="e.g. /raw/ (required when enabled)">
                             <small class="form-help">
                                 Java regex found anywhere in the full tag path, including the <code>[provider]</code> prefix.
                                 Anchor with <code>^</code> and <code>$</code> to match the whole path.
+                            </small>
+                        </div>
+                        <div class="form-group">
+                            <label for="opcItemPathProperty">OPC Item Path Property</label>
+                            <input type="text" class="form-control" id="opcItemPathProperty" name="opcItemPathProperty"
+                                   placeholder="opcItemPath" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+                            <small class="form-help">
+                                Tag property read as the source reference. Leave blank to use Ignition's <code>opcItemPath</code>;
+                                enter a custom property name (for example <code>cp-opcItemPath</code>) to read that instead.
                             </small>
                         </div>
                         <div class="form-group">
@@ -829,6 +838,16 @@
                             <input type="number" class="form-control" id="startupDelayMs" name="startupDelayMs"
                                    value="0" min="0" max="3600000">
                             <small class="form-help">Delay tag reads to allow other Ignition modules time to fully load before attempting to read tags</small>
+                        </div>
+                        <div class="form-group">
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="logAllSelectedTags" name="logAllSelectedTags">
+                                <label for="logAllSelectedTags">Log All Selected Tags (Ignore History Enabled)</label>
+                            </div>
+                            <small class="form-help">
+                                Collect every selected tag whether or not History Enabled is set on it. Each tag's own History Enabled
+                                value is still recorded in its metadata, and max-age readings still use its Max Time Between Samples.
+                            </small>
                         </div>
                     </div>
                 </div>
@@ -1471,6 +1490,10 @@
         function showAlert(message, type) {
             const container = document.getElementById('alertContainer');
             container.innerHTML = `<div class="alert alert-${type} show">${message}</div>`;
+            // Errors stay until the next message so they can be read.
+            if (type === 'error') {
+                return;
+            }
             setTimeout(() => {
                 container.querySelector('.alert').classList.remove('show');
             }, 5000);
@@ -1939,8 +1962,10 @@
             document.getElementById('hierarchyLevels').value = (config.hierarchyLevels || []).join(', ');
             document.getElementById('sourceKeyedEnabled').checked = config.sourceKeyedEnabled || false;
             document.getElementById('sourceKeyedTagRegex').value = config.sourceKeyedTagRegex || '';
+            document.getElementById('opcItemPathProperty').value = config.opcItemPathProperty || '';
             document.getElementById('metadataCheckIntervalMs').value = config.metadataCheckIntervalMs || 300000;
             document.getElementById('startupDelayMs').value = config.startupDelayMs || 0;
+            document.getElementById('logAllSelectedTags').checked = config.logAllSelectedTags || false;
 
             // PostgreSQL / Lakebase
             document.getElementById('postgresHost').value = config.postgresHost || '';
@@ -2032,8 +2057,10 @@
                 hierarchyLevels: document.getElementById('hierarchyLevels').value.split(',').map(s => s.trim()).filter(s => s.length > 0),
                 sourceKeyedEnabled: document.getElementById('sourceKeyedEnabled').checked,
                 sourceKeyedTagRegex: document.getElementById('sourceKeyedTagRegex').value,
+                opcItemPathProperty: document.getElementById('opcItemPathProperty').value.trim(),
                 metadataCheckIntervalMs: parseInt(document.getElementById('metadataCheckIntervalMs').value),
                 startupDelayMs: parseInt(document.getElementById('startupDelayMs').value) || 0,
+                logAllSelectedTags: document.getElementById('logAllSelectedTags').checked,
                 postgresHost: document.getElementById('postgresHost').value,
                 postgresPort: parseInt(document.getElementById('postgresPort').value),
                 postgresDatabase: document.getElementById('postgresDatabase').value,

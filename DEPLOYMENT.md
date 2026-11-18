@@ -52,7 +52,8 @@ Create the tables, grants, and pipeline as described in `databricks/historian/RE
 
 Collection follows each tag's Ignition history settings. Tags in the tag selection with **History Enabled** produce
 readings on every value or quality change. While the last value is Good, they also produce a max-age reading
-(quality 203, Good_Backfill) whenever **Max Time Between Samples** elapses without a reading. A tag is marked as no
+(quality 203, Good_Backfill) whenever **Max Time Between Samples** elapses without a reading. To collect every
+selected tag without enabling history on each one, check **Log All Selected Tags (Ignore History Enabled)**. A tag is marked as no
 longer existing after it is missing from two complete metadata checks in a row. If tag providers from other modules
 (for example MQTT Engine) load slowly after a gateway restart, set **Startup Delay (ms)** to postpone the first tag
 read. For high tag rates, enable store-and-forward and raise **Batch Size** so each acknowledged batch carries more

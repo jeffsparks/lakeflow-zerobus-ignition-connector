@@ -19,7 +19,8 @@ import java.util.regex.PatternSyntaxException;
  *   <li>name mode: identity_key = the metric name, exactly as configured (case-sensitive).</li>
  *   <li>source mode: identity_key = scope + "::" + source_ref, where scope is the first four
  *       non-leaf segments of the metric name joined by "/" (fewer when it is shallower) and source_ref is the
- *       underlying source reference (normally opcItemPath) exactly as configured.</li>
+ *       value of the source reference property (opcItemPath unless another tag property is configured) exactly
+ *       as configured.</li>
  * </ul>
  * Source mode applies only when the source-keyed rule is enabled, its regex matches the full tag path
  * (including the "[provider]" prefix, using {@link java.util.regex.Matcher#find()}), and a non-blank

@@ -60,8 +60,10 @@ public class ZerobusSettings83 extends PersistentRecord {
     public static final StringField HierarchyLevels = new StringField(META, "HierarchyLevels"); // comma-separated, ordered
     public static final BooleanField SourceKeyedEnabled = new BooleanField(META, "SourceKeyedEnabled");
     public static final StringField SourceKeyedTagRegex = new StringField(META, "SourceKeyedTagRegex");
+    public static final StringField OpcItemPathProperty = new StringField(META, "OpcItemPathProperty");
     public static final LongField MetadataCheckIntervalMs = new LongField(META, "MetadataCheckIntervalMs");
     public static final LongField StartupDelayMs = new LongField(META, "StartupDelayMs");
+    public static final BooleanField LogAllSelectedTags = new BooleanField(META, "LogAllSelectedTags");
 
     // Tag Selection
     public static final BooleanField EnableDirectSubscriptions = new BooleanField(META, "EnableDirectSubscriptions");
@@ -128,8 +130,10 @@ public class ZerobusSettings83 extends PersistentRecord {
         HierarchyLevels.setDefault("");
         SourceKeyedEnabled.setDefault(false);
         SourceKeyedTagRegex.setDefault("");
+        OpcItemPathProperty.setDefault("");
         MetadataCheckIntervalMs.setDefault(300_000L);
         StartupDelayMs.setDefault(0L);
+        LogAllSelectedTags.setDefault(false);
         EnableDirectSubscriptions.setDefault(true);
         TagSelectionMode.setDefault("explicit");
         TagFolderPath.setDefault("");
@@ -202,8 +206,10 @@ public class ZerobusSettings83 extends PersistentRecord {
         config.setHierarchyLevels(splitList(getString(HierarchyLevels)));
         config.setSourceKeyedEnabled(getBoolean(SourceKeyedEnabled));
         config.setSourceKeyedTagRegex(getString(SourceKeyedTagRegex));
+        config.setOpcItemPathProperty(getString(OpcItemPathProperty));
         config.setMetadataCheckIntervalMs(getLong(MetadataCheckIntervalMs));
         config.setStartupDelayMs(getLong(StartupDelayMs));
+        config.setLogAllSelectedTags(getBoolean(LogAllSelectedTags));
         config.setEnableDirectSubscriptions(getBoolean(EnableDirectSubscriptions));
         config.setTagSelectionMode(getString(TagSelectionMode));
         config.setTagFolderPath(getString(TagFolderPath));
@@ -277,8 +283,10 @@ public class ZerobusSettings83 extends PersistentRecord {
         setString(HierarchyLevels, String.join(",", config.getHierarchyLevels()));
         setBoolean(SourceKeyedEnabled, config.isSourceKeyedEnabled());
         setString(SourceKeyedTagRegex, config.getSourceKeyedTagRegex());
+        setString(OpcItemPathProperty, config.getOpcItemPathProperty());
         setLong(MetadataCheckIntervalMs, config.getMetadataCheckIntervalMs());
         setLong(StartupDelayMs, config.getStartupDelayMs());
+        setBoolean(LogAllSelectedTags, config.isLogAllSelectedTags());
         setBoolean(EnableDirectSubscriptions, config.isEnableDirectSubscriptions());
         setString(TagSelectionMode, config.getTagSelectionMode());
         setString(TagFolderPath, config.getTagFolderPath());

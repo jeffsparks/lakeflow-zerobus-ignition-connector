@@ -9,6 +9,7 @@ import com.example.ignition.zerobus.proto.SpoolRecord;
 import com.example.ignition.zerobus.saf.DiskSpool;
 import com.example.ignition.zerobus.web.TagEventPayload;
 import com.inductiveautomation.ignition.common.Dataset;
+import com.inductiveautomation.ignition.common.config.BasicProperty;
 import com.inductiveautomation.ignition.common.config.Property;
 import com.inductiveautomation.ignition.common.document.DocumentElement;
 import com.inductiveautomation.ignition.common.model.values.QualifiedValue;
@@ -46,7 +47,8 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * Collection is driven by each tag's Ignition history configuration: tags with history enabled produce a reading
  * on every value or quality change, and an unchanged tag whose last value was Good produces a max-age reading of
- * that value (quality Good_Backfill) once its maximum time between samples elapses.
+ * that value (quality Good_Backfill) once its maximum time between samples elapses. With "log all selected tags"
+ * enabled, every selected tag is collected as if history were enabled; snapshots still carry the tag's own setting.
  */
 public final class HistorianCollector {
     private static final Logger logger = LoggerFactory.getLogger(HistorianCollector.class);
@@ -61,15 +63,6 @@ public final class HistorianCollector {
     private static final int MAX_BROWSE_NODES = 1_000_000;
     private static final int MAX_PATTERN_MATCHES = 500_000;
 
-    private static final List<Property<?>> METADATA_PROPS = List.of(
-            WellKnownTagProps.HistoryEnabled,
-            TagHistoryProps.HistoryMaxAge,
-            TagHistoryProps.HistoryMaxAgeUnits,
-            OpcTagTypeProperties.OPCItemPath,
-            WellKnownTagProps.DataType,
-            WellKnownTagProps.EngUnit,
-            WellKnownTagProps.Documentation);
-
     private final GatewayContext context;
     private final ConfigModel config;
     private final String producerId;
@@ -80,6 +73,7 @@ public final class HistorianCollector {
     private final TagSelectionResolver resolver;
     private final ReadingFactory readings = new ReadingFactory(HistorianCollector::toJson);
     private final MetricIdentity.SourceKeyedRule sourceKeyedRule;
+    private final List<Property<?>> metadataProps;
 
     private final Map<String, TagState> tags = new ConcurrentHashMap<>();
     private final Queue<SpoolRecord> pending = new ConcurrentLinkedQueue<>();
@@ -106,6 +100,14 @@ public final class HistorianCollector {
         if (sourceKeyedRule.getError() != null) {
             logger.error("Source-keyed identity is disabled until fixed: {}", sourceKeyedRule.getError());
         }
+        this.metadataProps = List.of(
+                WellKnownTagProps.HistoryEnabled,
+                TagHistoryProps.HistoryMaxAge,
+                TagHistoryProps.HistoryMaxAgeUnits,
+                opcItemPathProperty(config),
+                WellKnownTagProps.DataType,
+                WellKnownTagProps.EngUnit,
+                WellKnownTagProps.Documentation);
         Path dir = DiskSpool.resolveDir(config.getSpoolDirectory()).resolve("historian");
         this.buffer = config.isEnableStoreAndForward()
                 ? HistorianBuffer.onDisk(dir, config.getSpoolMaxBytes(), Math.max(config.getMaxQueueSize(), config.getBatchSize() * 4), config.getSpoolReadMaxBytes())
@@ -120,8 +122,9 @@ public final class HistorianCollector {
         if (!running.compareAndSet(false, true)) {
             return;
         }
-        logger.info("Starting historian collector (producer_id={}, session_id={}, buffer={}, startup delay={} ms)",
-                producerId, sessionId, buffer.isDiskBacked() ? "disk" : "memory", config.getStartupDelayMs());
+        logger.info("Starting historian collector (producer_id={}, session_id={}, buffer={}, startup delay={} ms, source reference property={}, log all selected tags={})",
+                producerId, sessionId, buffer.isDiskBacked() ? "disk" : "memory", config.getStartupDelayMs(), opcItemPathProperty(config).getName(),
+                config.isLogAllSelectedTags());
         timers = Executors.newScheduledThreadPool(2, daemon("Zerobus-Historian-Timer"));
         scanner = Executors.newSingleThreadScheduledExecutor(daemon("Zerobus-Historian-Metadata"));
         flusher = Executors.newSingleThreadScheduledExecutor(daemon("Zerobus-Historian-Flush"));
@@ -185,9 +188,9 @@ public final class HistorianCollector {
 
             for (int i = 0; i < selection.paths.size(); i += READ_CHUNK_TAGS) {
                 List<TagPath> chunk = selection.paths.subList(i, Math.min(i + READ_CHUNK_TAGS, selection.paths.size()));
-                List<TagPath> propertyPaths = new ArrayList<>(chunk.size() * METADATA_PROPS.size());
+                List<TagPath> propertyPaths = new ArrayList<>(chunk.size() * metadataProps.size());
                 for (TagPath tp : chunk) {
-                    for (Property<?> p : METADATA_PROPS) {
+                    for (Property<?> p : metadataProps) {
                         propertyPaths.add(tp.getChildPath(p));
                     }
                 }
@@ -201,7 +204,7 @@ public final class HistorianCollector {
                 }
                 for (int t = 0; t < chunk.size(); t++) {
                     TagPath tp = chunk.get(t);
-                    MetadataTracker.ObservedTag tag = toObserved(tp, values.subList(t * METADATA_PROPS.size(), (t + 1) * METADATA_PROPS.size()));
+                    MetadataTracker.ObservedTag tag = toObserved(tp, values.subList(t * metadataProps.size(), (t + 1) * metadataProps.size()));
                     if (tag != null) {
                         observed.add(tag);
                         pathsByKey.put(tp.toString(), tp);
@@ -281,7 +284,7 @@ public final class HistorianCollector {
             state.metricId = snapshot.getMetricId();
             state.dataType = snapshot.hasDataType() ? snapshot.getDataType() : null;
             state.maxAgeMs = snapshot.hasHistoryMaxAgeMs() ? snapshot.getHistoryMaxAgeMs() : 0L;
-            boolean enabled = snapshot.getHistoryEnabled();
+            boolean enabled = collects(snapshot);
             if (enabled && !state.subscribed && config.isEnableDirectSubscriptions()) {
                 toSubscribe.add(state);
             } else if (!enabled && state.subscribed) {
@@ -318,7 +321,7 @@ public final class HistorianCollector {
                 logger.error("Failed to subscribe to {} tag(s)", paths.size(), err);
                 states.forEach(s -> s.subscribed = false);
             } else {
-                logger.info("Subscribed to {} history-enabled tag(s)", paths.size());
+                logger.info("Subscribed to {} tag(s)", paths.size());
             }
         });
     }
@@ -402,7 +405,7 @@ public final class HistorianCollector {
             path = "[" + payload.getTagProvider() + "]" + path;
         }
         MetricMetadataEvent binding = tracker.getActive(TagPathParts.parse(path));
-        if (binding == null || !binding.getHistoryEnabled() || payload.getQualityCode() == null || payload.getTimestamp() == null) {
+        if (binding == null || !collects(binding) || payload.getQualityCode() == null || payload.getTimestamp() == null) {
             httpRejected.incrementAndGet();
             return false;
         }
@@ -507,7 +510,8 @@ public final class HistorianCollector {
             sb.append("Source-keyed rule error: ").append(sourceKeyedRule.getError()).append('\n');
         }
         sb.append("Active tags: ").append(tracker.activeCount()).append('\n');
-        sb.append("Subscribed (history enabled): ").append(subscribed).append('\n');
+        sb.append("Subscribed (").append(config.isLogAllSelectedTags() ? "all selected tags" : "history enabled").append("): ")
+                .append(subscribed).append('\n');
         sb.append("Last metadata scan: ").append(lastScanMs > 0 ? ((System.currentTimeMillis() - lastScanMs) / 1000) + " seconds ago, " : "")
                 .append(lastScanSummary).append('\n');
         sb.append("Metadata snapshots emitted: ").append(metadataEmitted.get()).append('\n');
@@ -523,6 +527,19 @@ public final class HistorianCollector {
         sb.append("Batches sent: ").append(batchesSent.get()).append('\n');
         sb.append(client.getDiagnostics());
         return sb.toString();
+    }
+
+    private boolean collects(MetricMetadataEvent snapshot) {
+        return config.isLogAllSelectedTags() || snapshot.getHistoryEnabled();
+    }
+
+    /** The tag property read as the source reference: Ignition's opcItemPath unless another property is configured. */
+    static Property<?> opcItemPathProperty(ConfigModel config) {
+        String name = config.getOpcItemPathProperty();
+        if (name == null || name.isBlank() || name.trim().equals(OpcTagTypeProperties.OPCItemPath.getName())) {
+            return OpcTagTypeProperties.OPCItemPath;
+        }
+        return new BasicProperty<>(name.trim(), Object.class);
     }
 
     /** The folder-mode root, when it is excluded from metric names. */

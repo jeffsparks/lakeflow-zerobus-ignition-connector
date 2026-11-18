@@ -145,11 +145,17 @@ public class ConfigModel implements Serializable {
     /** Java regex found anywhere in the full tag path (including the [provider] prefix) */
     private String sourceKeyedTagRegex = "";
 
+    /** Tag property read as the source reference; blank means Ignition's opcItemPath */
+    private String opcItemPathProperty = "";
+
     /** Interval between tag metadata checks (milliseconds) */
     private long metadataCheckIntervalMs = 300_000L;
 
     /** Delay before the historian's first tag read after it starts (milliseconds) */
     private long startupDelayMs = 0L;
+
+    /** Collect every selected tag, ignoring each tag's History Enabled setting */
+    private boolean logAllSelectedTags = false;
 
     // === Tag Selection Settings ===
     
@@ -513,6 +519,14 @@ public class ConfigModel implements Serializable {
         this.sourceKeyedTagRegex = sourceKeyedTagRegex;
     }
 
+    public String getOpcItemPathProperty() {
+        return opcItemPathProperty;
+    }
+
+    public void setOpcItemPathProperty(String opcItemPathProperty) {
+        this.opcItemPathProperty = opcItemPathProperty == null ? "" : opcItemPathProperty.trim();
+    }
+
     public long getMetadataCheckIntervalMs() {
         return metadataCheckIntervalMs;
     }
@@ -527,6 +541,14 @@ public class ConfigModel implements Serializable {
 
     public void setStartupDelayMs(long startupDelayMs) {
         this.startupDelayMs = startupDelayMs;
+    }
+
+    public boolean isLogAllSelectedTags() {
+        return logAllSelectedTags;
+    }
+
+    public void setLogAllSelectedTags(boolean logAllSelectedTags) {
+        this.logAllSelectedTags = logAllSelectedTags;
     }
 
     public String getTagSelectionMode() {
@@ -1225,8 +1247,10 @@ public class ConfigModel implements Serializable {
             || !Objects.equals(this.hierarchyLevels, newConfig.hierarchyLevels)
             || this.sourceKeyedEnabled != newConfig.sourceKeyedEnabled
             || !Objects.equals(this.sourceKeyedTagRegex, newConfig.sourceKeyedTagRegex)
+            || !Objects.equals(this.opcItemPathProperty, newConfig.opcItemPathProperty)
             || this.metadataCheckIntervalMs != newConfig.metadataCheckIntervalMs
             || this.startupDelayMs != newConfig.startupDelayMs
+            || this.logAllSelectedTags != newConfig.logAllSelectedTags
             || this.enableDirectSubscriptions != newConfig.enableDirectSubscriptions
             || !Objects.equals(this.tagSelectionMode, newConfig.tagSelectionMode)
             || !Objects.equals(this.tagFolderPath, newConfig.tagFolderPath)
@@ -1289,8 +1313,10 @@ public class ConfigModel implements Serializable {
         this.hierarchyLevels = (other.hierarchyLevels == null) ? new ArrayList<>() : new ArrayList<>(other.hierarchyLevels);
         this.sourceKeyedEnabled = other.sourceKeyedEnabled;
         this.sourceKeyedTagRegex = other.sourceKeyedTagRegex;
+        this.opcItemPathProperty = other.opcItemPathProperty;
         this.metadataCheckIntervalMs = other.metadataCheckIntervalMs;
         this.startupDelayMs = other.startupDelayMs;
+        this.logAllSelectedTags = other.logAllSelectedTags;
         this.enableDirectSubscriptions = other.enableDirectSubscriptions;
         this.tagSelectionMode = other.tagSelectionMode;
         this.tagFolderPath = other.tagFolderPath;

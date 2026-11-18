@@ -45,4 +45,31 @@ public class HistorianConfigTest {
         config.updateFrom(updated);
         assertFalse(config.isIncludeRootFolderInNames());
     }
+
+    @Test
+    public void logAllSelectedTagsIsOffByDefaultAndRestartsCollection() {
+        ConfigModel config = new ConfigModel();
+        assertFalse(config.isLogAllSelectedTags());
+        ConfigModel updated = new ConfigModel();
+        updated.updateFrom(config);
+        updated.setLogAllSelectedTags(true);
+        assertTrue(config.requiresRestart(updated));
+        config.updateFrom(updated);
+        assertTrue(config.isLogAllSelectedTags());
+    }
+
+    @Test
+    public void opcItemPathPropertyDefaultsToBlankAndRestartsCollection() {
+        ConfigModel config = new ConfigModel();
+        assertEquals("", config.getOpcItemPathProperty());
+        ConfigModel updated = new ConfigModel();
+        updated.updateFrom(config);
+        updated.setOpcItemPathProperty("  cp-opcItemPath ");
+        assertEquals("cp-opcItemPath", updated.getOpcItemPathProperty());
+        assertTrue(config.requiresRestart(updated));
+        config.updateFrom(updated);
+        assertEquals("cp-opcItemPath", config.getOpcItemPathProperty());
+        updated.setOpcItemPathProperty(null);
+        assertEquals("", updated.getOpcItemPathProperty());
+    }
 }
