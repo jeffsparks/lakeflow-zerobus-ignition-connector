@@ -3,6 +3,40 @@
 The connector (`sinkMode=zerobus`) writes three Zerobus landing tables; a Lakeflow pipeline maintains the
 processed tables.
 
+## Tags, PLC tags, and metrics
+
+- A **PLC tag** is a value inside an industrial device, usually a register in a PLC. It can represent anything,
+  even the previous value of another PLC tag. Ignition reads the device over a native protocol (EtherNet/IP,
+  Modbus TCP, ...) through a device connection and exposes each PLC tag on its internal OPC UA server, addressed
+  by an OPC item path such as `ns=1;s=[filler1_plc1]Status`.
+- A **tag** is an Ignition tag (usually on Ignition Edge). An engineer names it freely and points it at a PLC tag
+  through its OPC item path. Ignition timestamps each value when it reads the PLC tag. A tag can be renamed or
+  pointed at a different PLC tag at any time, and several tags can point at the same PLC tag, intentionally or
+  not.
+- A **metric** is the stored timeseries of a tag's values, identified by `metric_id`. Each tag path that
+  publishes a metric is one of its names, kept in `metric_names`.
+
+## Name-keyed and source-keyed metrics
+
+Contextualizing industrial data means making assumptions about what a PLC tag represents. The historian keys
+each metric on whichever part is reliable.
+
+**Name-keyed metrics** are well-characterized, standard data points with a governed name, such as the PackML
+machine state. The metric is the name. If an engineer later finds the tag reads the wrong PLC tag, they point it
+at the right one and the metric continues; its source does not matter. Renaming the tag creates a different
+metric, because a standard name is a different data point.
+
+**Source-keyed metrics** are raw signals whose meaning is not settled, such as a temperature that might be the
+motor's or the shaft's. Engineers place these tags in a `raw` folder, and the source-keyed tag regex (for
+example `/raw/`) selects them. The metric is the PLC tag within its work unit, and tag names are labels on it:
+
+- Renaming the tag (motor temperature to shaft temperature) keeps the metric's history.
+- Several tags pointing at the same PLC tag are one metric with several names, and the data is stored once.
+  This is normal and expected; Ignition doesn't warn about it and it can't be prevented.
+- Pointing the tag at a different PLC tag moves the name to that PLC tag's metric.
+
+Moving a tag out of `raw` into a standard name makes it name-keyed, which starts a new metric.
+
 | Table | Written by | Purpose |
 |---|---|---|
 | `metrics_ingest` | connector (Zerobus) | Append-only reading landing table; may contain retries |
@@ -44,6 +78,10 @@ The connector only appends to the landing tables. Every other table is derived b
   (including `[provider]`), and the tag has a source reference. The connector reads it from `opcItemPath`, or
   from the tag property named in **OPC Item Path Property** (for example a custom property `cp-opcItemPath` on
   MQTT Engine tags, which do not carry the edge tag's `opcItemPath`).
+  This works only for edge tags outside UDT instances. MQTT Transmission publishes a UDT instance as a
+  Sparkplug template, and MQTT Engine rebuilds it from the UDT definition and the instance's parameters, so
+  properties set on an instance's tags never reach the Standard gateway. Those tags have no source reference
+  and are name-keyed.
 
 Other producers can write the same landing tables if they follow these rules.
 
@@ -58,8 +96,10 @@ Other producers can write the same landing tables if they follow these rules.
 connector, that is its latest complete scan of the tag selection. A producer going offline does not make its names
 inactive. Narrowing the tag selection marks the excluded tags inactive.
 
-**metric_metadata** is resolved from the latest snapshot of each of the metric's active names. One metric should
-have one publisher; these rules give a predictable result when it has more:
+**metric_metadata** is resolved from the latest snapshot of each of the metric's active names. A source-keyed
+metric often has several names, each with its own settings; a name-keyed metric has exactly one. A metric
+should have only one publisher (`producer_id`); two can happen only by mistake. These rules combine the names'
+settings, and give a predictable result even then:
 
 - `history_enabled`: true if any active name has history enabled.
 - `history_max_age_ms`: the shortest positive interval among history-enabled names. If there is none, the value

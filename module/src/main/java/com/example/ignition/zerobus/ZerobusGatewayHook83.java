@@ -135,6 +135,12 @@ public class ZerobusGatewayHook83 extends AbstractGatewayModuleHook implements Z
     }
 
     @Override
+    public boolean isFreeModule() {
+        // Must match module-8.3.xml <freeModule>true</freeModule>
+        return true;
+    }
+
+    @Override
     public Optional<String> getMountPathAlias() {
         return Optional.of(MOUNT_ALIAS);
     }
